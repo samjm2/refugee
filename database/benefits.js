@@ -1,0 +1,738 @@
+/**
+ * benefits.js — MASTER REFUGEE BENEFITS DATABASE
+ * ===============================================
+ * Scope: U.S. federal, refugee-focused, current 2025-2026 rules.
+ * Eligibility is DETERMINISTIC: each `rule` is evaluated by the engine over the
+ * variables in eligibility-schema.js. No AI decides eligibility.
+ *
+ * Each record:
+ *   id, name, category, agency
+ *   description     - what it is (plain language)
+ *   benefits        - what it gives
+ *   eligibility_text- human-readable eligibility summary
+ *   rule            - machine-evaluable logic tree (the deterministic engine reads this)
+ *   time_limit      - any time window, plain language
+ *   how_to_apply    - short process
+ *   apply_link      - official URL (portal or directory where no single form exists)
+ *   form            - { name, url, type } real federal PDF where it exists, else state-portal note
+ *   restore_if_lost - condition that RESTORES eligibility if currently lost (per your request)
+ *   current_status_note - what changed in 2025-2026
+ *   sources         - official citations
+ *
+ * FPL note: income thresholds reference the Federal Poverty Level (FPL); the
+ * engine holds the current FPL table by household_size and computes the % checks.
+ */
+
+window.BENEFITS = [
+
+  /* ============================================================= *
+   * CATEGORY A — ORR CASH & EARLY SELF-SUFFICIENCY
+   * ============================================================= */
+
+  {
+    id: "rca",
+    name: "Refugee Cash Assistance (RCA)",
+    category: "Cash assistance",
+    agency: "Office of Refugee Resettlement (ORR), via state agencies / resettlement agencies",
+    description: "Temporary cash payments to help newly arrived refugees who are not eligible for other cash aid (TANF or SSI) cover basic needs.",
+    benefits: "Monthly cash for food, shelter, transportation, and other basic needs, paired with self-sufficiency planning and employment services.",
+    eligibility_text: "ORR-eligible population, within the RCA time window, not eligible for TANF or SSI. Recipients must participate in work/training activities.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { not: { var: "eligible_for_tanf", is: true } },
+        { not: { var: "eligible_for_ssi", is: true } },
+        {
+          any: [
+            { all: [ { var: "eligibility_date_on_or_after_may5_2025", is: true }, { var: "months_since_eligibility_date", lte: 4 } ] },
+            { all: [ { not: { var: "eligibility_date_on_or_after_may5_2025", is: true } }, { var: "months_since_eligibility_date", lte: 12 } ] }
+          ]
+        }
+      ]
+    },
+    time_limit: "4 months from the ORR eligibility date for those eligible on/after May 5, 2025 (was 12 months before that date). Clock starts at the eligibility date, NOT the application date — apply immediately.",
+    how_to_apply: "Apply at your state refugee benefits office or local resettlement agency. Bring proof of status (I-94 §207, I-94 'Visa 93', or EAD code A03).",
+    apply_link: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state",
+    form: { name: "No single federal form — state-administered intake", url: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state", type: "state_portal" },
+    restore_if_lost: "If the 4-month window has passed, RCA cannot be reinstated; transition to employment income and screen for SNAP-after-LPR and other still-open programs.",
+    current_status_note: "ORR shortened RCA from 12 to 4 months effective May 5, 2025 (Federal Register 2025-04839).",
+    sources: [
+      { title: "ORR Dear Colleague Letter 25-13", url: "https://acf.gov/orr/policy/dear-colleague-letters/25-13", asOf: "2025-03-28" },
+      { title: "Benefits for Refugees (ORR fact sheet)", url: "https://acf.gov/orr/fact-sheet/refugee-benefits", asOf: "2026-01-01" },
+      { title: "45 CFR 400 Subpart E", url: "https://www.ecfr.gov/current/title-45/subtitle-B/chapter-IV/part-400/subpart-E", asOf: "2026-01-22" }
+    ]
+  },
+
+  {
+    id: "matching_grant",
+    name: "ORR Matching Grant (MG) Program",
+    category: "Cash assistance",
+    agency: "ORR, via national resettlement agencies",
+    description: "An alternative to TANF/RCA for refugees who can move quickly toward self-sufficiency. Intensive, employment-focused, limited slots.",
+    benefits: "Cash assistance, intensive case management, and employment services aimed at economic self-sufficiency within 240 days, without using public cash assistance.",
+    eligibility_text: "ORR-eligible population, enrolled early (typically within the first month of eligibility), not receiving TANF/RCA/SSI. Slots are limited by location.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "months_since_eligibility_date", lte: 1 },
+        { not: { var: "receives_other_cash_benefit", is: true } },
+        { var: "is_employed_or_seeking", is: true, review: true }
+      ]
+    },
+    time_limit: "240-day service period; must enroll as soon as possible after the eligibility date (slots limited).",
+    how_to_apply: "Ask your local resettlement agency whether they have Matching Grant slots and enroll immediately on arrival.",
+    apply_link: "https://www.acf.hhs.gov/orr/programs/refugees/matching-grant",
+    form: { name: "Enrollment handled by resettlement agency", url: "https://www.acf.hhs.gov/orr/programs/refugees/matching-grant", type: "agency_intake" },
+    restore_if_lost: "Cannot enroll after the early window or if no local slots; fall back to RCA/TANF and employment services.",
+    current_status_note: "Ongoing ORR program; enrollment depends on local agency capacity.",
+    sources: [
+      { title: "Benefits for Refugees (ORR fact sheet)", url: "https://acf.gov/orr/fact-sheet/refugee-benefits", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "tanf",
+    name: "Temporary Assistance for Needy Families (TANF)",
+    category: "Cash assistance",
+    agency: "U.S. Dept. of Health & Human Services (ACF), administered by states",
+    description: "Mainstream cash assistance and support services for low-income families with children. Refugees are 'qualified aliens' and eligible.",
+    benefits: "Monthly cash assistance plus support services (work supports, childcare referrals). State sets amounts and rules.",
+    eligibility_text: "Family with a dependent child under 19 (or pregnant), low income, qualified-alien status. A 30-day application waiting period applies. Screened before RCA for families.",
+    rule: {
+      all: [
+        { var: "is_qualified_alien", is: true },
+        { any: [ { var: "num_children_under_19", gte: 1 }, { var: "is_pregnant", is: true } ] },
+        { fpl: 100, of: "household_gross_monthly_income", size: "household_size", review: true }
+      ]
+    },
+    time_limit: "Federal lifetime limit of 60 months (states may set shorter). 30-day wait from application to benefits.",
+    how_to_apply: "Apply at your state human services / public assistance office (online or in person). Refugee families should be screened for TANF before RCA.",
+    apply_link: "https://www.acf.hhs.gov/ofa/map/about/help-families",
+    form: { name: "State application (varies by state)", url: "https://www.acf.hhs.gov/ofa/map/about/help-families", type: "state_portal" },
+    restore_if_lost: "If income rises above the limit, eligibility ends; re-apply if circumstances change. Not affected by the 2025 immigration cuts (refugees remain qualified aliens for TANF).",
+    current_status_note: "TANF eligibility for refugees was NOT cut by OBBBA — refugees remain eligible as qualified aliens.",
+    sources: [
+      { title: "ORR Benefits for Refugees", url: "https://acf.gov/orr/fact-sheet/refugee-benefits", asOf: "2026-01-01" },
+      { title: "TANF/SNAP/WIC overview (SAMHSA SOAR)", url: "https://soarworks.samhsa.gov/article/other-resources-for-children-and-families-tanf-snap-and-wic", asOf: "2026-01-01" }
+    ]
+  },
+
+  /* ============================================================= *
+   * CATEGORY B — HEALTH COVERAGE
+   * ============================================================= */
+
+  {
+    id: "rma",
+    name: "Refugee Medical Assistance (RMA)",
+    category: "Health coverage",
+    agency: "ORR, via state agencies",
+    description: "Short-term health coverage equivalent to Medicaid, for refugees who are not eligible for Medicaid.",
+    benefits: "Same coverage as Medicaid (doctor visits, hospital, prescriptions) during the eligibility window.",
+    eligibility_text: "ORR-eligible population, not eligible for Medicaid, within the RMA time window.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { not: { var: "eligible_for_medicaid", is: true } },
+        {
+          any: [
+            { all: [ { var: "eligibility_date_on_or_after_may5_2025", is: true }, { var: "months_since_eligibility_date", lte: 4 } ] },
+            { all: [ { not: { var: "eligibility_date_on_or_after_may5_2025", is: true } }, { var: "months_since_eligibility_date", lte: 12 } ] }
+          ]
+        }
+      ]
+    },
+    time_limit: "4 months from the ORR eligibility date for those eligible on/after May 5, 2025 (was 12 months). Apply immediately.",
+    how_to_apply: "Apply at your state refugee health / benefits office or through your resettlement agency at the same time as RCA.",
+    apply_link: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state",
+    form: { name: "State-administered intake", url: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state", type: "state_portal" },
+    restore_if_lost: "After the window, seek Medicaid (until Oct 1 2026 cutoff), ACA marketplace coverage (subsidized through end of 2026), or community health centers.",
+    current_status_note: "RMA shortened from 12 to 4 months effective May 5, 2025, alongside RCA.",
+    sources: [
+      { title: "ORR Dear Colleague Letter 25-13", url: "https://acf.gov/orr/policy/dear-colleague-letters/25-13", asOf: "2025-03-28" },
+      { title: "RMA coverage explainer (USCRI)", url: "https://refugees.org/refugee-medical-assistance-a-strong-start-requires-strong-health-coverage/", asOf: "2026-05-01" }
+    ]
+  },
+
+  {
+    id: "medicaid",
+    name: "Medicaid",
+    category: "Health coverage",
+    agency: "Centers for Medicare & Medicaid Services (CMS), administered by states",
+    description: "Comprehensive public health insurance for low-income people. Refugees currently qualify immediately, but eligibility for many humanitarian statuses ends October 1, 2026.",
+    benefits: "Full health coverage: doctor, hospital, prescriptions, preventive care; children's coverage via CHIP.",
+    eligibility_text: "Low income within the state's Medicaid limit AND a still-covered immigration status. Refugees/asylees lose federal Medicaid eligibility on Oct 1, 2026 (children and pregnant women may keep it in some states).",
+    rule: {
+      all: [
+        {
+          any: [
+            { var: "has_adjusted_to_lpr", is: true },
+            { var: "is_pregnant", is: true, review: true },
+            { var: "age", lt: 19, review: true },
+            { all: [ { var: "immigration_status", in: ["refugee_207","asylee_208","siv","afghan_parolee","cuban_haitian_entrant","trafficking_victim","amerasian"] }, { var: "months_since_arrival", lt: 999, review: true } ] }
+          ]
+        },
+        { fpl: 138, of: "household_gross_monthly_income", size: "household_size", review: true }
+      ]
+    },
+    time_limit: "No time limit while eligible — BUT federal eligibility for refugees, asylees, parolees, and similar statuses ENDS October 1, 2026 under OBBBA.",
+    how_to_apply: "Apply through your state Medicaid agency (online, by phone, or in person) or via HealthCare.gov, which routes Medicaid-eligible applicants to the state.",
+    apply_link: "https://www.medicaid.gov/about-us/where-can-people-get-help-medicaid-chip/index.html",
+    form: { name: "State Medicaid application / HealthCare.gov", url: "https://www.healthcare.gov/", type: "state_portal" },
+    restore_if_lost: "Adjusting to lawful permanent resident (green card) preserves Medicaid eligibility past the Oct 2026 cut. Otherwise: ACA marketplace (subsidized through end of 2026), community health centers, emergency Medicaid for emergencies.",
+    current_status_note: "OBBBA (H.R.1, signed July 4 2025) ends federal Medicaid/CHIP funding for refugees, asylees, and parolees effective Oct 1, 2026; emergency services and (at state option) children/pregnant women may continue.",
+    sources: [
+      { title: "OBBBA Medicaid/CHIP changes (Paragon)", url: "https://paragoninstitute.org/medicaid/immigration-and-health-care-in-the-one-big-beautiful-bill-how-the-new-law-reforms-eligibility-for-medicaid-medicare-and-aca-subsidies/", asOf: "2025-09-17" },
+      { title: "Immigrant public benefits (USAHello)", url: "https://usahello.org/life-in-usa/money/public-benefits/", asOf: "2026-03-31" }
+    ]
+  },
+
+  {
+    id: "chip",
+    name: "Children's Health Insurance Program (CHIP)",
+    category: "Health coverage",
+    agency: "CMS, administered by states",
+    description: "Low-cost health coverage for children in families that earn too much for Medicaid but cannot afford private insurance.",
+    benefits: "Children's doctor visits, immunizations, dental, vision, hospital care, prescriptions.",
+    eligibility_text: "Child under 19 in a moderate-income household with a covered status. Same Oct 1, 2026 federal cut as Medicaid for affected statuses; many states elect to keep covering lawfully residing children.",
+    rule: {
+      all: [
+        { var: "num_children_under_19", gte: 1 },
+        { fpl: 200, of: "household_gross_monthly_income", size: "household_size", review: true },
+        {
+          any: [
+            { var: "has_adjusted_to_lpr", is: true },
+            { var: "immigration_status", in: ["refugee_207","asylee_208","siv","afghan_parolee","cuban_haitian_entrant","trafficking_victim","amerasian"], review: true }
+          ]
+        }
+      ]
+    },
+    time_limit: "Renew annually. Federal funding for affected immigrant statuses ends Oct 1, 2026 (state option to continue children/pregnant women).",
+    how_to_apply: "Apply through your state CHIP/Medicaid agency or HealthCare.gov.",
+    apply_link: "https://www.insurekidsnow.gov/",
+    form: { name: "State CHIP application", url: "https://www.insurekidsnow.gov/", type: "state_portal" },
+    restore_if_lost: "Many states continue covering lawfully residing children regardless of the federal change; check your state. LPR adjustment preserves eligibility.",
+    current_status_note: "Same OBBBA cut as Medicaid; children/pregnant women may be retained at state election.",
+    sources: [
+      { title: "How H.R.1 impacts non-citizen coverage (SHVS)", url: "https://shvs.org/how-h-r-1-impacts-coverage-for-non-citizens/", asOf: "2025-10-01" }
+    ]
+  },
+
+  {
+    id: "aca_marketplace",
+    name: "ACA Marketplace coverage + premium subsidies",
+    category: "Health coverage",
+    agency: "CMS / HealthCare.gov",
+    description: "Private health plans bought through the federal/state marketplace, with income-based subsidies (premium tax credits) that lower the cost.",
+    benefits: "Comprehensive private insurance; premium tax credits and cost-sharing reductions for eligible incomes.",
+    eligibility_text: "Lawfully present, not eligible for other minimum essential coverage (Medicaid/RMA/Medicare). Refugees/asylees can still get SUBSIDIES through the 2026 plan year; subsidies end for them Jan 1, 2027.",
+    rule: {
+      all: [
+        { var: "is_qualified_alien", is: true },
+        { not: { var: "eligible_for_medicaid", is: true } },
+        { fpl: 400, of: "household_gross_monthly_income", size: "household_size", review: true }
+      ]
+    },
+    time_limit: "Enroll during open enrollment (Nov 1 - mid Jan) or a special enrollment period. Subsidy eligibility for refugees/asylees ends Jan 1, 2027 (OBBBA).",
+    how_to_apply: "Apply at HealthCare.gov (or your state marketplace) during open enrollment; arrival as a refugee is a qualifying event for special enrollment.",
+    apply_link: "https://www.healthcare.gov/",
+    form: { name: "HealthCare.gov application", url: "https://www.healthcare.gov/", type: "federal_portal" },
+    restore_if_lost: "Adjusting to LPR keeps subsidy eligibility past Jan 2027. Otherwise coverage remains purchasable at full (unsubsidized) cost.",
+    current_status_note: "OBBBA ends premium tax credits for refugees/asylees effective Jan 1, 2027; below-poverty non-citizens ineligible for Medicaid lost some credits Jan 1, 2026.",
+    sources: [
+      { title: "Refugees & ACA (healthinsurance.org)", url: "https://www.healthinsurance.org/faqs/what-health-insurance-benefits-are-available-to-refugees-and-asylees-arriving-in-the-united-states/", asOf: "2026-03-26" },
+      { title: "ACA marketplace changes (Georgetown CHIR)", url: "https://chir.georgetown.edu/recent-federal-aca-marketplace-changes-strip-access-to-health-care-for-many-lawfully-present-immigrants/", asOf: "2025-10-24" }
+    ]
+  },
+
+  {
+    id: "medical_screening",
+    name: "ORR Domestic Medical Screening",
+    category: "Health coverage",
+    agency: "ORR, via state refugee health programs",
+    description: "A one-time health check soon after arrival that identifies urgent conditions and provides required vaccinations.",
+    benefits: "Health exam, vaccinations needed for school/work, referrals to primary care and specialists. No cost.",
+    eligibility_text: "All ORR-eligible arrivals are eligible; best completed soon after arrival.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "months_since_arrival", lte: 12 }
+      ]
+    },
+    time_limit: "Recommended within the first few months after arrival.",
+    how_to_apply: "Your resettlement agency schedules this; or contact your state refugee health coordinator.",
+    apply_link: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state",
+    form: { name: "Scheduled by resettlement agency / state health program", url: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state", type: "agency_intake" },
+    restore_if_lost: "If missed early, ask your state refugee health program whether a late screening is still available.",
+    current_status_note: "Ongoing ORR-funded benefit.",
+    sources: [
+      { title: "Benefits for Refugees (ORR fact sheet)", url: "https://acf.gov/orr/fact-sheet/refugee-benefits", asOf: "2026-01-01" }
+    ]
+  },
+
+  /* ============================================================= *
+   * CATEGORY C — FOOD & NUTRITION
+   * ============================================================= */
+
+  {
+    id: "snap",
+    name: "Supplemental Nutrition Assistance Program (SNAP)",
+    category: "Food assistance",
+    agency: "USDA Food & Nutrition Service, administered by states",
+    description: "Monthly benefits on an EBT card to buy groceries. Federal law changed in 2025: most humanitarian statuses lost SNAP eligibility unless they become green card holders.",
+    benefits: "Monthly food-purchasing benefits scaled to household size and income (EBT card usable at most grocery stores).",
+    eligibility_text: "As of Nov 1, 2025, only U.S. citizens, LPRs, Cuban/Haitian entrants, and certain Pacific Islanders are eligible. Refugees/asylees are NOT directly eligible UNLESS they have adjusted to LPR (humanitarian-origin LPRs are exempt from the 5-year bar and qualify immediately).",
+    rule: {
+      all: [
+        {
+          any: [
+            { var: "immigration_status", eq: "us_citizen" },
+            { var: "immigration_status", eq: "lpr_from_humanitarian" },
+            { var: "immigration_status", eq: "cuban_haitian_entrant" },
+            { all: [ { var: "immigration_status", eq: "lpr_other" }, { any: [ { var: "has_40_work_quarters", is: true }, { var: "age", lt: 18 }, { var: "is_disabled", is: true } ] } ] }
+          ]
+        },
+        { fpl: 130, of: "household_gross_monthly_income", size: "household_size" }
+      ]
+    },
+    time_limit: "No time limit while eligible. Able-bodied adults without dependents face federal work requirements.",
+    how_to_apply: "Apply through your state SNAP agency (online or in person). If you receive/apply for SSI, your local Social Security office can help with the SNAP application.",
+    apply_link: "https://www.fns.usda.gov/snap/state-directory",
+    form: { name: "State SNAP application (varies)", url: "https://www.fns.usda.gov/snap/state-directory", type: "state_portal" },
+    restore_if_lost: "ADJUST TO LPR (green card). Refugees/asylees who become LPRs are exempt from the 5-year SNAP bar and regain eligibility immediately. Until then, use food banks and WIC (no status restriction).",
+    current_status_note: "OBBBA Section 10108 (effective Nov 1, 2025) removed refugees, asylees, trafficking victims, and parolees from SNAP eligibility. Some states are over-applying the bar even to eligible humanitarian-origin LPRs — those cases need a benefits specialist.",
+    sources: [
+      { title: "USDA FNS OBBB Alien Eligibility", url: "https://www.fns.usda.gov/snap/obbb-alien-eligibility", asOf: "2025-11-01" },
+      { title: "Global Refuge OBBBA SNAP FAQ", url: "https://www.globalrefuge.org/wp-content/uploads/2026/01/Updated-GR-OBBBA-FAQ-on-SNAP.pdf", asOf: "2026-01-06" },
+      { title: "NILC immigrant eligibility overview", url: "https://www.nilc.org/resources/overview-immeligfedprograms/", asOf: "2026-01-06" }
+    ]
+  },
+
+  {
+    id: "wic",
+    name: "WIC — Women, Infants, and Children",
+    category: "Food assistance",
+    agency: "USDA Food & Nutrition Service, administered by states",
+    description: "Nutrition program for pregnant and postpartum women, infants, and children under 5. Importantly, WIC is NOT restricted by immigration status — refugees remain eligible.",
+    benefits: "Healthy-food benefits, infant formula, nutrition education, breastfeeding support, and health referrals.",
+    eligibility_text: "Pregnant/postpartum woman, or a child under 5, with income at or below 185% FPL (automatic if on SNAP/Medicaid/TANF). No immigration-status restriction in 49 states.",
+    rule: {
+      all: [
+        { any: [ { var: "is_pregnant", is: true }, { var: "num_children_under_5", gte: 1 } ] },
+        { any: [ { fpl: 185, of: "household_gross_monthly_income", size: "household_size" }, { var: "receives_other_cash_benefit", is: true } ] }
+      ]
+    },
+    time_limit: "Through pregnancy and up to the child's 5th birthday; recertify periodically.",
+    how_to_apply: "Contact your state/local WIC office to schedule an appointment (income and a brief health screening).",
+    apply_link: "https://www.fns.usda.gov/wic/contacts",
+    form: { name: "State WIC enrollment (in-person screening)", url: "https://www.fns.usda.gov/wic/contacts", type: "state_portal" },
+    restore_if_lost: "WIC is not affected by the 2025 immigration cuts; eligibility ends only when the child turns 5 or income rises. Does NOT count against public charge.",
+    current_status_note: "Not restricted by OBBBA. Available to refugees regardless of status (Idaho is the only state historically restricting WIC).",
+    sources: [
+      { title: "Benefits for immigrants (BenefitsUSA)", url: "https://benefitsusa.org/en/blog/government-benefits-for-immigrants", asOf: "2026-04-19" },
+      { title: "TANF/SNAP/WIC overview (SAMHSA SOAR)", url: "https://soarworks.samhsa.gov/article/other-resources-for-children-and-families-tanf-snap-and-wic", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "school_meals",
+    name: "National School Lunch & Breakfast Programs",
+    category: "Food assistance",
+    agency: "USDA Food & Nutrition Service, via schools",
+    description: "Free or reduced-price meals at school for children, available to all children regardless of immigration status.",
+    benefits: "Free or reduced-price breakfast and lunch at school; automatic ('categorical') eligibility if the household is on SNAP/TANF.",
+    eligibility_text: "School-age child in a low-income household (≤185% FPL for reduced price, ≤130% for free). No immigration-status restriction.",
+    rule: {
+      all: [
+        { var: "num_children_under_18", gte: 1 },
+        { any: [ { fpl: 185, of: "household_gross_monthly_income", size: "household_size" }, { var: "receives_other_cash_benefit", is: true } ] }
+      ]
+    },
+    time_limit: "Each school year; re-apply annually (some schools offer universal free meals).",
+    how_to_apply: "Submit the school meal application provided by your child's school or district at enrollment.",
+    apply_link: "https://www.fns.usda.gov/nslp",
+    form: { name: "School/district meal application", url: "https://www.fns.usda.gov/nslp", type: "school_form" },
+    restore_if_lost: "Not affected by immigration cuts; does not count against public charge. Re-apply each school year.",
+    current_status_note: "Available to all children regardless of status; unaffected by OBBBA.",
+    sources: [
+      { title: "Benefits for immigrants (BenefitsUSA)", url: "https://benefitsusa.org/en/blog/government-benefits-for-immigrants", asOf: "2026-04-19" }
+    ]
+  },
+
+  /* ============================================================= *
+   * CATEGORY D — DISABILITY & ELDERLY CASH
+   * ============================================================= */
+
+  {
+    id: "ssi",
+    name: "Supplemental Security Income (SSI)",
+    category: "Disability / elderly cash",
+    agency: "Social Security Administration (SSA)",
+    description: "Monthly cash for people who are aged (65+), blind, or disabled and have very low income/resources. Refugees and asylees qualify for a limited 7-year window.",
+    benefits: "Monthly federal cash payment (some states add a supplement); in most states SSI recipients are automatically eligible for Medicaid.",
+    eligibility_text: "Aged 65+, blind, or disabled, with low income/resources, AND within 7 years of the date humanitarian status was granted. The 7-year clock starts at the status grant date, not arrival.",
+    rule: {
+      all: [
+        { var: "immigration_status", in: ["refugee_207","asylee_208","siv","afghan_parolee","trafficking_victim","cuban_haitian_entrant","amerasian","lpr_from_humanitarian"] },
+        { var: "years_since_status_grant", lte: 7 },
+        { any: [ { var: "age", gte: 65 }, { var: "is_disabled", is: true }, { var: "is_blind", is: true } ] }
+      ]
+    },
+    time_limit: "Maximum 7 years from the date DHS granted qualified-alien status, unless the person naturalizes or earns 40 work quarters. SSA sends warning letters before the cutoff.",
+    how_to_apply: "Apply with SSA online, by phone (1-800-772-1213), or at a local office. The non-medical portion uses Form SSA-8000.",
+    apply_link: "https://www.ssa.gov/ssi/",
+    form: { name: "SSA-8000-BK — Application for Supplemental Security Income", url: "https://www.ssa.gov/forms/ssa-8000.html", type: "federal_pdf" },
+    restore_if_lost: "Naturalizing (becoming a U.S. citizen) or earning 40 qualifying work quarters removes the 7-year limit. Begin naturalization (N-400) well before year 7.",
+    current_status_note: "7-year rule unchanged. SIV translators, Afghan parolees, and certified trafficking victims also fall within the 7-year window (8 USC 1612).",
+    sources: [
+      { title: "SSA SSI noncitizen eligibility", url: "https://www.ssa.gov/ssi/text-eligibility-ussi.htm", asOf: "2026-01-01" },
+      { title: "SSI for immigrants (BenefitsUSA)", url: "https://benefitsusa.org/en/blog/ssi-eligibility-immigrants-noncitizens-2026", asOf: "2026-06-01" }
+    ]
+  },
+
+  {
+    id: "ssdi",
+    name: "Social Security Disability Insurance (SSDI)",
+    category: "Disability / elderly cash",
+    agency: "Social Security Administration (SSA)",
+    description: "Monthly benefits for people who can no longer work due to disability and have enough U.S. work history. Based on work credits, not immigration status.",
+    benefits: "Monthly cash based on earnings record; Medicare eligibility after 24 months. Can be claimed on a spouse's/parent's record.",
+    eligibility_text: "A disabling condition plus enough work credits (roughly 40, or fewer if younger), earned while authorized to work. Refugees with sufficient U.S. work history qualify like citizens.",
+    rule: {
+      all: [
+        { var: "is_disabled", is: true },
+        { var: "has_40_work_quarters", is: true },
+        { var: "has_ssn", is: true }
+      ]
+    },
+    time_limit: "Continues while disabled; converts to retirement benefits at full retirement age.",
+    how_to_apply: "Apply with SSA online, by phone (1-800-772-1213), or at a local office; provide medical evidence and work history.",
+    apply_link: "https://www.ssa.gov/benefits/disability/",
+    form: { name: "SSA-16 — Application for Disability Insurance Benefits", url: "https://www.ssa.gov/forms/ssa-16.html", type: "federal_pdf" },
+    restore_if_lost: "Not status-limited; if work credits are insufficient, a family member's record may qualify you, or screen for SSI instead.",
+    current_status_note: "Unaffected by immigration cuts; based on contributions.",
+    sources: [
+      { title: "SSDI for non-citizens (BenefitsUSA)", url: "https://benefitsusa.org/en/blog/ssdi-non-citizens-green-card-holders-2026", asOf: "2026-06-01" }
+    ]
+  },
+
+  /* ============================================================= *
+   * CATEGORY E — ENERGY & HOUSING
+   * ============================================================= */
+
+  {
+    id: "liheap",
+    name: "Low Income Home Energy Assistance Program (LIHEAP)",
+    category: "Energy & housing",
+    agency: "ACF, administered by states/tribes",
+    description: "Help paying home heating and cooling bills, and some weatherization. Not restricted by immigration status.",
+    benefits: "Payments toward energy bills, crisis assistance for shut-offs, and weatherization in some areas.",
+    eligibility_text: "Low-income household (state threshold, often ≤150% FPL or 60% state median income). No immigration-status restriction; eligibility is household-based.",
+    rule: {
+      all: [
+        { fpl: 150, of: "household_gross_monthly_income", size: "household_size", review: true }
+      ]
+    },
+    time_limit: "Seasonal/annual; apply each program year (crisis funds while available).",
+    how_to_apply: "Apply through your state/local LIHEAP office or community action agency.",
+    apply_link: "https://www.acf.hhs.gov/ocs/programs/liheap",
+    form: { name: "State LIHEAP application (varies)", url: "https://www.acf.hhs.gov/ocs/programs/liheap", type: "state_portal" },
+    restore_if_lost: "Not affected by immigration cuts; does not count against public charge. Re-apply each program year.",
+    current_status_note: "Available to refugees; unaffected by OBBBA.",
+    sources: [
+      { title: "Benefits for immigrants (BenefitsUSA)", url: "https://benefitsusa.org/en/blog/government-benefits-for-immigrants", asOf: "2026-04-19" }
+    ]
+  },
+
+  {
+    id: "reception_placement",
+    name: "Reception & Placement (R&P) — initial housing support",
+    category: "Energy & housing",
+    agency: "U.S. Dept. of State (Bureau of PRM), via resettlement agencies",
+    description: "The first-90-days program every arriving refugee is assigned to: basic housing setup, furnishings, and orientation through a local resettlement agency.",
+    benefits: "Help securing initial housing, basic furniture and supplies, cultural orientation, and referrals during the first 90 days.",
+    eligibility_text: "Newly arrived refugees assigned to a resettlement agency; benefits concentrated in the first 90 days after arrival.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "months_since_arrival", lte: 3 }
+      ]
+    },
+    time_limit: "First 90 days after arrival.",
+    how_to_apply: "This is assigned automatically; confirm which resettlement agency holds your case and contact your assigned caseworker. If none is assigned, contact your state refugee coordinator.",
+    apply_link: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state",
+    form: { name: "Assigned via resettlement agency", url: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state", type: "agency_intake" },
+    restore_if_lost: "After 90 days, transition to RSS housing-related services, local mutual aid, and mainstream housing assistance.",
+    current_status_note: "Ongoing State Department program; funding levels vary year to year.",
+    sources: [
+      { title: "Benefits for Refugees (ORR fact sheet)", url: "https://acf.gov/orr/fact-sheet/refugee-benefits", asOf: "2026-01-01" }
+    ]
+  },
+
+  /* ============================================================= *
+   * CATEGORY F — EMPLOYMENT, EDUCATION & INTEGRATION
+   * (ORR Refugee Support Services; generally up to 5 years from arrival)
+   * ============================================================= */
+
+  {
+    id: "rss",
+    name: "Refugee Support Services (RSS)",
+    category: "Employment & integration",
+    agency: "ORR, via state agencies / resettlement agencies",
+    description: "The umbrella of services that help refugees find work and settle in: job help, English classes, childcare, transportation, interpretation, and case management.",
+    benefits: "Employability services, job training/placement/retention, English language training, childcare, transportation, interpreter/translation, and case management.",
+    eligibility_text: "ORR-eligible population, generally within 5 years (60 months) of arrival.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "months_since_arrival", lte: 60 }
+      ]
+    },
+    time_limit: "Up to 5 years (60 months) from date of arrival/eligibility.",
+    how_to_apply: "Contact your local resettlement agency or state refugee program to enroll in employment and support services.",
+    apply_link: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state",
+    form: { name: "Enrollment via resettlement agency", url: "https://www.acf.hhs.gov/orr/map/find-resources-and-contacts-your-state", type: "agency_intake" },
+    restore_if_lost: "After 5 years, use mainstream workforce programs (American Job Centers), adult ESL, and community organizations.",
+    current_status_note: "Ongoing ORR formula program (5-year service window).",
+    sources: [
+      { title: "Benefits for Refugees (ORR fact sheet)", url: "https://acf.gov/orr/fact-sheet/refugee-benefits", asOf: "2026-01-01" },
+      { title: "ORR Refugee Resettlement Program", url: "https://acf.gov/orr/programs/refugees", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "childcare_ccdf",
+    name: "Childcare Assistance (ORR / CCDF)",
+    category: "Employment & integration",
+    agency: "ORR (within RSS) and/or state CCDF",
+    description: "Help paying for childcare so refugee parents can work, train, or attend English classes.",
+    benefits: "Subsidized childcare while the parent works or participates in employment/training/ESL.",
+    eligibility_text: "ORR-eligible parent within the 5-year service window, working or in training/ESL, with a child needing care.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "months_since_arrival", lte: 60 },
+        { var: "num_children_under_18", gte: 1 },
+        { var: "is_employed_or_seeking", is: true }
+      ]
+    },
+    time_limit: "Within the 5-year RSS window (ORR-funded) or per state CCDF rules.",
+    how_to_apply: "Ask your resettlement agency about ORR childcare, or apply to your state CCDF/childcare subsidy program.",
+    apply_link: "https://childcare.gov/consumer-education/get-help-paying-for-child-care",
+    form: { name: "State childcare subsidy application", url: "https://childcare.gov/consumer-education/get-help-paying-for-child-care", type: "state_portal" },
+    restore_if_lost: "After the ORR window, apply through mainstream state CCDF childcare subsidies (separate eligibility).",
+    current_status_note: "Provided within RSS; availability varies by locality.",
+    sources: [
+      { title: "Benefits for Refugees (ORR fact sheet)", url: "https://acf.gov/orr/fact-sheet/refugee-benefits", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "refugee_career_pathways",
+    name: "Refugee Career Pathways (RCP)",
+    category: "Employment & integration",
+    agency: "ORR (discretionary grant)",
+    description: "Helps refugees re-enter professional or skilled careers they held before — through credentialing, recertification, and career coaching.",
+    benefits: "Career coaching, help with professional recertification/licensing, training toward skilled employment.",
+    eligibility_text: "ORR-eligible population seeking skilled/professional employment; availability depends on local grantees.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "months_since_arrival", lte: 60 },
+        { var: "is_employed_or_seeking", is: true }
+      ]
+    },
+    time_limit: "Within the 5-year service window; grantee-dependent.",
+    how_to_apply: "Ask your resettlement agency whether a Refugee Career Pathways grantee operates in your area.",
+    apply_link: "https://acf.gov/orr/programs/refugees",
+    form: { name: "Via local ORR grantee", url: "https://acf.gov/orr/programs/refugees", type: "agency_intake" },
+    restore_if_lost: "Use mainstream workforce/credentialing services if no local grantee.",
+    current_status_note: "ORR discretionary program; not available everywhere.",
+    sources: [
+      { title: "ORR Refugee Resettlement Program", url: "https://acf.gov/orr/programs/refugees", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "microenterprise",
+    name: "Refugee Microenterprise Development (MED)",
+    category: "Employment & integration",
+    agency: "ORR (discretionary grant)",
+    description: "Loans and training to help refugees start, sustain, or grow a small business.",
+    benefits: "Microloans, business training, technical assistance, and help with business planning.",
+    eligibility_text: "ORR-eligible population interested in self-employment; availability depends on local grantees.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "wants_to_start_business", is: true }
+      ]
+    },
+    time_limit: "Grantee-dependent; generally within the service window.",
+    how_to_apply: "Ask your resettlement agency about ORR microenterprise grantees in your area.",
+    apply_link: "https://acf.gov/orr/programs/refugees",
+    form: { name: "Via local ORR grantee", url: "https://acf.gov/orr/programs/refugees", type: "agency_intake" },
+    restore_if_lost: "Use mainstream Small Business Administration (SBA) microloan resources and CDFIs.",
+    current_status_note: "ORR discretionary program; location-dependent.",
+    sources: [
+      { title: "Refugee discretionary grants (HHS TAGGS)", url: "https://taggs.hhs.gov/Detail/CFDADetail?arg_CFDA_NUM=93576", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "ida",
+    name: "Refugee Individual Development Accounts (IDA)",
+    category: "Employment & integration",
+    agency: "ORR (discretionary grant)",
+    description: "Matched savings accounts that help refugees save toward an asset — like a car, home, education, or business capital.",
+    benefits: "Matching funds on savings (often dollar-for-dollar up to a cap) plus financial-literacy training.",
+    eligibility_text: "ORR-eligible population saving toward an approved asset goal; income limits and availability set by grantees.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "months_since_arrival", lte: 60 }
+      ]
+    },
+    time_limit: "Grantee-dependent savings period.",
+    how_to_apply: "Ask your resettlement agency whether an ORR IDA grantee operates locally.",
+    apply_link: "https://acf.gov/orr/programs/refugees",
+    form: { name: "Via local ORR grantee", url: "https://acf.gov/orr/programs/refugees", type: "agency_intake" },
+    restore_if_lost: "Look for community-based matched-savings programs if no ORR grantee.",
+    current_status_note: "ORR discretionary program; location-dependent.",
+    sources: [
+      { title: "Refugee discretionary grants (HHS TAGGS)", url: "https://taggs.hhs.gov/Detail/CFDADetail?arg_CFDA_NUM=93576", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "agricultural_partnership",
+    name: "Refugee Agricultural Partnership Program (RAPP)",
+    category: "Employment & integration",
+    agency: "ORR (discretionary grant)",
+    description: "Supports refugees in farming and community-gardening projects, including market access and food-business development.",
+    benefits: "Training in U.S. agriculture, land/market access, and support building food-based livelihoods.",
+    eligibility_text: "ORR-eligible population interested in farming/gardening livelihoods; availability depends on local grantees.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "wants_to_start_business", is: true, review: true }
+      ]
+    },
+    time_limit: "Grantee-dependent.",
+    how_to_apply: "Ask your resettlement agency whether a RAPP grantee operates in your area.",
+    apply_link: "https://acf.gov/orr/programs/refugees",
+    form: { name: "Via local ORR grantee", url: "https://acf.gov/orr/programs/refugees", type: "agency_intake" },
+    restore_if_lost: "Connect with USDA beginning-farmer and local food programs.",
+    current_status_note: "ORR discretionary program; location-dependent.",
+    sources: [
+      { title: "ORR Refugee Resettlement Program", url: "https://acf.gov/orr/programs/refugees", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "preferred_communities",
+    name: "Preferred Communities (PC)",
+    category: "Employment & integration",
+    agency: "ORR (discretionary grant)",
+    description: "Intensive case management for the most vulnerable arrivals — people with medical conditions, single parents, older refugees, and others needing extra support.",
+    benefits: "Individualized, intensive case management and service coordination for vulnerable clients.",
+    eligibility_text: "ORR-eligible population identified as vulnerable (medical needs, elderly, single caregivers, etc.); availability depends on local grantees.",
+    rule: {
+      all: [
+        { var: "is_orr_eligible_population", is: true },
+        { var: "months_since_arrival", lte: 60 },
+        { any: [ { var: "is_disabled", is: true }, { var: "age", gte: 65 }, { var: "is_unaccompanied_minor", is: true }, { var: "is_pregnant", is: true } ], review: true }
+      ]
+    },
+    time_limit: "Within the service window; grantee-dependent.",
+    how_to_apply: "Ask your resettlement agency whether they offer a Preferred Communities program and request a referral.",
+    apply_link: "https://acf.gov/orr/programs/refugees",
+    form: { name: "Referral via resettlement agency", url: "https://acf.gov/orr/programs/refugees", type: "agency_intake" },
+    restore_if_lost: "Use mainstream disability, aging, and social services if no local grantee.",
+    current_status_note: "ORR discretionary program; location-dependent.",
+    sources: [
+      { title: "Refugee discretionary grants (HHS TAGGS)", url: "https://taggs.hhs.gov/Detail/CFDADetail?arg_CFDA_NUM=93576", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "urm",
+    name: "Unaccompanied Refugee Minors (URM) Program",
+    category: "Employment & integration",
+    agency: "ORR, via state child-welfare systems",
+    description: "Specialized foster care and child-welfare services for refugee and other eligible children who arrive or end up in the U.S. without a parent or guardian.",
+    benefits: "Foster-care placement, the full range of services available to foster children, independent-living support, and legal-custody arrangements.",
+    eligibility_text: "A minor without an available parent/guardian, in an eligible status (refugee, asylee, Cuban/Haitian entrant, trafficking victim with eligibility letter, SIJ, or certain U-visa/Afghan/Ukrainian minors).",
+    rule: {
+      all: [
+        { var: "is_unaccompanied_minor", is: true },
+        { var: "immigration_status", in: ["refugee_207","asylee_208","cuban_haitian_entrant","trafficking_victim","siv","afghan_parolee","ukrainian_parolee"], review: true }
+      ]
+    },
+    time_limit: "Until the youth ages out of care / independent-living services end (state-dependent).",
+    how_to_apply: "Referrals come through the State Department (overseas), ORR, or child-welfare authorities; ask a resettlement agency or caseworker to initiate.",
+    apply_link: "https://acf.gov/orr/programs/refugees/urm",
+    form: { name: "URM Program Application (OMB 0970-0550)", url: "https://acf.gov/orr/programs/refugees/urm", type: "agency_intake" },
+    restore_if_lost: "If a family breakdown occurs after arrival, a refugee child may become URM-eligible; contact child-welfare services.",
+    current_status_note: "Distinct from the federally administered Unaccompanied Children (UC) program; URM is state-administered.",
+    sources: [
+      { title: "ORR URM Program", url: "https://acf.gov/orr/programs/refugees/urm", asOf: "2026-01-01" },
+      { title: "URM populations (CA DSS)", url: "https://cdss.ca.gov/inforesources/refugees/subprograms-and-info/urm", asOf: "2026-01-01" }
+    ]
+  },
+
+  /* ============================================================= *
+   * CATEGORY G — LEGAL / STATUS
+   * ============================================================= */
+
+  {
+    id: "adjustment_of_status",
+    name: "Adjustment of Status to Lawful Permanent Resident (Green Card, Form I-485)",
+    category: "Legal / status",
+    agency: "U.S. Citizenship and Immigration Services (USCIS)",
+    description: "The process by which a refugee or asylee becomes a green card holder. Refugees are required to apply one year after admission; asylees may apply one year after asylum is granted. Becoming an LPR restores SNAP and Medicaid eligibility lost under the 2025 law.",
+    benefits: "Lawful permanent residence; restores eligibility for SNAP and (after the Oct 2026 cut) Medicaid; a step toward citizenship.",
+    eligibility_text: "Refugee physically present 1 year since admission, or asylee 1 year since grant, still meeting refugee/asylee definition. This is a legal filing — a licensed attorney or DOJ-accredited representative should review it.",
+    rule: {
+      all: [
+        { var: "immigration_status", in: ["refugee_207","asylee_208"] },
+        { any: [ { var: "months_since_arrival", gte: 12 }, { var: "years_since_status_grant", gte: 1 } ], review: true }
+      ]
+    },
+    time_limit: "Refugees: must apply 1 year after admission. Asylees: eligible 1 year after the asylum grant.",
+    how_to_apply: "File Form I-485 with USCIS. Strongly recommended to work with a licensed immigration attorney or DOJ-accredited representative; free/low-cost legal aid is available.",
+    apply_link: "https://www.uscis.gov/i-485",
+    form: { name: "USCIS Form I-485 — Application to Register Permanent Residence or Adjust Status", url: "https://www.uscis.gov/i-485", type: "federal_pdf" },
+    restore_if_lost: "This IS the restoration pathway for SNAP/Medicaid. No automated filing — must go through a qualified human (attorney/accredited rep).",
+    current_status_note: "Becoming an LPR (humanitarian origin) exempts the person from the SNAP/Medicaid 5-year bar, restoring eligibility for those programs.",
+    sources: [
+      { title: "USCIS Form I-485", url: "https://www.uscis.gov/i-485", asOf: "2026-01-01" },
+      { title: "Government benefits for immigrants (Illinois Legal Aid)", url: "https://www.illinoislegalaid.org/legal-information/government-benefits-immigrants", asOf: "2026-01-01" }
+    ]
+  },
+
+  {
+    id: "legal_services",
+    name: "Immigration Legal Services (nonprofit / accredited)",
+    category: "Legal / status",
+    agency: "Nonprofit legal aid + DOJ-recognized organizations",
+    description: "Free or low-cost legal help with status-related matters: adjustment of status, family reunification, work authorization renewals, and naturalization.",
+    benefits: "Legal advice and representation from licensed attorneys or DOJ-accredited representatives; help preparing immigration filings.",
+    eligibility_text: "Any refugee/asylee with an immigration-legal need. Status and asylum decisions must be handled by a qualified human, never by automated advice.",
+    rule: {
+      all: [
+        { var: "is_qualified_alien", is: true, review: true }
+      ]
+    },
+    time_limit: "No fixed window; some filings (status adjustment, work-permit renewal) are themselves time-sensitive.",
+    how_to_apply: "Find a DOJ-recognized organization or refugee legal-services provider; your resettlement agency can refer you.",
+    apply_link: "https://www.justice.gov/eoir/recognition-and-accreditation-program",
+    form: { name: "Varies by matter (handled by the attorney/representative)", url: "https://www.justice.gov/eoir/recognition-and-accreditation-program", type: "agency_intake" },
+    restore_if_lost: "N/A — this is the human-in-the-loop pathway that supports the other restoration routes.",
+    current_status_note: "Critical now: legal help to adjust to LPR is the route that restores lost food/health benefits.",
+    sources: [
+      { title: "DOJ Recognition & Accreditation Program", url: "https://www.justice.gov/eoir/recognition-and-accreditation-program", asOf: "2026-01-01" }
+    ]
+  }
+];
+
+/* Total programs: 25 federal refugee benefit records across 7 categories. */
+
