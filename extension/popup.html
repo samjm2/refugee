@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wayfinder Form Filler</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; width: 320px; min-height: 200px; background: #f8f7f5; color: #1a1a1a; }
+    .header { background: #1a3a5c; color: white; padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+    .header h1 { font-size: 16px; font-weight: 700; }
+    .content { padding: 16px; }
+    .status { font-size: 13px; color: #6b7280; margin-bottom: 12px; }
+    .btn { display: block; width: 100%; padding: 12px 16px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: background 0.15s; }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-primary:disabled { background: #9ca3af; cursor: default; }
+    .btn-secondary { background: white; color: #374151; border: 2px solid #e5e7eb; margin-top: 8px; }
+    .btn-secondary:hover { border-color: #9ca3af; }
+    .code-box { background: white; border: 2px solid #e5e7eb; border-radius: 8px; padding: 12px; margin: 12px 0; text-align: center; }
+    .code { font-family: monospace; font-size: 28px; font-weight: 700; letter-spacing: 6px; color: #1a3a5c; }
+    .code-hint { font-size: 11px; color: #6b7280; margin-top: 4px; }
+    .success { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 12px; font-size: 13px; color: #15803d; }
+    .error { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 12px; font-size: 13px; color: #dc2626; margin-bottom: 12px; }
+    .paired-info { font-size: 12px; color: #6b7280; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round">
+      <path d="M9 12l2 2 4-4"/>
+      <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/>
+    </svg>
+    <h1>Wayfinder Form Filler</h1>
+  </div>
+  <div class="content" id="content">
+    <p class="status" id="status">Loading...</p>
+  </div>
+  <script type="module" src="dist/popup.js"></script>
+</body>
+</html>

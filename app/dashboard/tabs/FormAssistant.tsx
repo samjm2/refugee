@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import type { Profile, Document, EligibilityBenefit } from "@/lib/types";
+import type { EligibilityBenefit } from "@/lib/types";
 import { useTranslation } from "@/components/i18n/TranslationProvider";
 import { putFormFile, type StoredFormFile } from "@/lib/formFileStore";
 
@@ -14,9 +14,9 @@ type FormInfo = {
 };
 
 interface Props {
-  language: string;
-  profile?: Profile;
-  documents?: Document[];
+  language?: string;
+  profile?: unknown;
+  documents?: unknown[];
   benefits?: EligibilityBenefit[];
   formInfoById?: Record<string, FormInfo>;
 }
@@ -75,12 +75,10 @@ function deadlineBadge(
 }
 
 export default function FormAssistant({
-  profile: _profile,
-  documents: _documents,
   benefits = [],
   formInfoById,
 }: Props) {
-  const { t } = useTranslation();
+  useTranslation(); // keeps provider context available for future i18n
   const router = useRouter();
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -118,7 +116,7 @@ export default function FormAssistant({
           Apply for Benefits
         </h2>
         <p className="mt-1 text-lg text-text-muted">
-          Select a benefit below and we'll pre-fill your application using the information you
+          Select a benefit below and we&apos;ll pre-fill your application using the information you
           already gave us. You review everything before submitting.
         </p>
         <div className="mt-3 inline-flex items-start gap-2 rounded-[--radius-md] bg-success-50 px-4 py-2 text-sm font-medium text-success-700 ring-1 ring-success-100">
@@ -247,7 +245,7 @@ export default function FormAssistant({
         <div className="mb-4 border-t border-border pt-6">
           <h3 className="mb-1 font-display text-lg font-bold text-text">Upload your own form</h3>
           <p className="mb-4 text-sm text-text-muted">
-            Have a government form you want help filling out? Upload it here and we'll pre-fill
+            Have a government form you want help filling out? Upload it here and we&apos;ll pre-fill
             the fields we can from your profile.
           </p>
 

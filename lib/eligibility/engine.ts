@@ -188,15 +188,6 @@ export function evalRule(rule: Rule, ctx: EvalContext): RuleResult {
   return "review";
 }
 
-// Does this rule tree contain any fpl leaf? (Used for the maybe_eligible
-// downgrade when income could not be applied.)
-function ruleHasFplLeaf(rule: Rule): boolean {
-  if (isAll(rule)) return rule.all.some(ruleHasFplLeaf);
-  if (isAny(rule)) return rule.any.some(ruleHasFplLeaf);
-  if (isNot(rule)) return ruleHasFplLeaf(rule.not);
-  return isFplLeaf(rule);
-}
-
 // ── needsAttorney (deterministic, from category) ─────────────────────────────
 
 export function benefitNeedsAttorney(benefit: BenefitRecord): boolean {

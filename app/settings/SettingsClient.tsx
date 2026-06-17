@@ -143,6 +143,32 @@ export default function SettingsClient({ profile }: { profile: Profile }) {
   const [saveError, setSaveError] = useState("");
   const [savedSuccess, setSavedSuccess] = useState(false);
 
+  // ── Extension pairing area ──
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [pairingExpiry, setPairingExpiry] = useState<string | null>(null);
+  const [pairingLoading, setPairingLoading] = useState(false);
+  const [pairingError, setPairingError] = useState("");
+
+  async function handlePairExtension() {
+    setPairingLoading(true);
+    setPairingError("");
+    setPairingCode(null);
+    try {
+      const res = await fetch("/api/extension/pair", { method: "POST" });
+      const data = await res.json() as { code?: string; expiresAt?: string; error?: string };
+      if (!res.ok || !data.code) {
+        setPairingError(data.error ?? "Could not generate a pairing code. Try again.");
+      } else {
+        setPairingCode(data.code);
+        setPairingExpiry(data.expiresAt ?? null);
+      }
+    } catch {
+      setPairingError("Network error. Check your connection and try again.");
+    } finally {
+      setPairingLoading(false);
+    }
+  }
+
   function set<K extends keyof FormData>(key: K, value: FormData[K]) {
     setForm((f) => ({ ...f, [key]: value }));
   }
@@ -462,6 +488,54 @@ export default function SettingsClient({ profile }: { profile: Profile }) {
                 </button>
               </div>
             </div>
+          )}
+        </section>
+
+        {/* ── BROWSER EXTENSION ── */}
+        <section className="mt-6 rounded-[--radius-md] border border-border bg-surface p-5 shadow-sm md:p-6">
+          <h2 className="text-xl font-semibold text-text">Browser Extension</h2>
+          <p className="mt-1 text-base text-text-muted">
+            Connect the Wayfinder Chrome extension to pre-fill fields on real government websites.
+            Your sensitive information (SSN, A-number) is never sent — you fill those in yourself.
+          </p>
+
+          {pairingError && (
+            <div className="mt-4 rounded-[--radius-md] bg-danger-50 px-4 py-3 text-sm font-medium text-danger-700 ring-1 ring-danger-100">
+              {pairingError}
+            </div>
+          )}
+
+          {pairingCode ? (
+            <div className="mt-4">
+              <p className="mb-2 text-sm font-semibold text-text-muted">
+                Enter this code in the Wayfinder extension popup:
+              </p>
+              <div className="rounded-[--radius-md] border-2 border-harbor-300 bg-harbor-50 px-6 py-4 text-center">
+                <p className="font-mono text-3xl font-bold tracking-[6px] text-harbor-800">
+                  {pairingCode}
+                </p>
+                <p className="mt-2 text-xs text-text-faint">
+                  Expires in 5 minutes.{" "}
+                  {pairingExpiry && `(${new Date(pairingExpiry).toLocaleTimeString()})`}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setPairingCode(null); setPairingExpiry(null); }}
+                className="mt-3 text-sm font-semibold text-text-muted underline-offset-2 hover:underline focus-visible:outline-none"
+              >
+                Generate a new code
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={handlePairExtension}
+              disabled={pairingLoading}
+              className="mt-4 inline-flex items-center gap-2 rounded-[--radius-md] border-2 border-harbor-300 bg-surface px-5 py-3 text-base font-semibold text-harbor-700 transition active:scale-[0.98] hover:border-harbor-500 hover:bg-harbor-50 disabled:opacity-40 focus-visible:outline-none focus-visible:shadow-focus"
+            >
+              {pairingLoading ? "Generating code..." : "Connect browser extension"}
+            </button>
           )}
         </section>
       </div>
