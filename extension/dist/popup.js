@@ -1,4 +1,7 @@
 // src/popup.ts
+var TRUSTED_VERCEL_HOSTS = /* @__PURE__ */ new Set([
+  // "wayfinder.vercel.app",
+]);
 var content = document.getElementById("content");
 function html(s) {
   content.innerHTML = s;
@@ -29,12 +32,11 @@ function renderUnpaired() {
 function renderPaired(pairedAt) {
   const date = pairedAt ? new Date(pairedAt).toLocaleDateString() : "Unknown";
   html(`
-    <div class="success">\u2713 Connected to Wayfinder</div>
+    <div class="success">Connected \u2713</div>
     <p class="paired-info">Paired on ${date}</p>
-    <button class="btn btn-primary" id="btn-fill" style="margin-top:12px">Fill Detected Fields</button>
-    <button class="btn btn-secondary" id="btn-disconnect">Disconnect</button>
+    <p class="status" style="margin-top:8px">Open Wayfinder in your browser and use <strong>Fill out with AI</strong> on a benefit to fill forms.</p>
+    <button class="btn btn-secondary" id="btn-disconnect" style="margin-top:12px">Disconnect</button>
   `);
-  document.getElementById("btn-fill").addEventListener("click", fillCurrentPage);
   document.getElementById("btn-disconnect").addEventListener("click", disconnect);
 }
 async function detectOrigin() {
@@ -47,6 +49,7 @@ async function detectOrigin() {
         const h = u.hostname.toLowerCase().replace(/\.$/, "");
         if (h === "localhost" || h === "127.0.0.1") return u.origin;
         if (h === "wayfinder.app" || h.endsWith(".wayfinder.app")) return u.origin;
+        if (TRUSTED_VERCEL_HOSTS.has(h)) return u.origin;
       } catch {
       }
     }
@@ -62,14 +65,12 @@ async function startPairing() {
     <div style="margin: 10px 0;">
       <input id="code-input" type="text" maxlength="8" placeholder="e.g. AB1C2D" style="width:100%;padding:10px;border:2px solid #e5e7eb;border-radius:8px;font-family:monospace;font-size:18px;letter-spacing:3px;text-align:center;text-transform:uppercase" />
     </div>
-    <label style="display:block;font-size:11px;color:#6b7280;margin:8px 0 4px">Wayfinder server</label>
-    <input id="origin-input" type="text" value="${origin}" style="width:100%;padding:8px;border:2px solid #e5e7eb;border-radius:8px;font-size:12px;font-family:monospace" />
     <button class="btn btn-primary" id="btn-exchange" style="margin-top:12px">Confirm Code</button>
     <button class="btn btn-secondary" id="btn-cancel-pair">Cancel</button>
   `);
   const submit = async () => {
     const code = document.getElementById("code-input").value.trim().toUpperCase();
-    const originVal = document.getElementById("origin-input").value.trim().replace(/\/$/, "");
+    const originVal = origin.trim().replace(/\/$/, "");
     if (originVal) await chrome.storage.local.set({ wf_origin: originVal });
     void exchangeCode(code);
   };
@@ -97,30 +98,6 @@ async function exchangeCode(code) {
     setTimeout(renderUnpaired, 2500);
   } else {
     renderPaired(Date.now());
-  }
-}
-async function fillCurrentPage() {
-  const btn = document.getElementById("btn-fill");
-  btn.disabled = true;
-  btn.textContent = "Loading your profile...";
-  const profileRes = await chrome.runtime.sendMessage({ type: "get-profile-values" });
-  if (!profileRes.ok || !profileRes.values) {
-    html(`<div class="error">${profileRes.error ?? "Failed to load profile"}</div>`);
-    setTimeout(() => renderPaired(), 2500);
-    return;
-  }
-  btn.textContent = "Filling fields...";
-  const fillRes = await chrome.runtime.sendMessage({ type: "fill-fields", values: profileRes.values });
-  if (!fillRes.ok) {
-    html(`<div class="error">${fillRes.error ?? "Fill failed"}</div>`);
-    setTimeout(() => renderPaired(), 2500);
-  } else {
-    html(`
-      <div class="success">\u2713 Filled ${fillRes.filled ?? 0} field${(fillRes.filled ?? 0) !== 1 ? "s" : ""}</div>
-      <p style="margin-top:8px;font-size:12px;color:#6b7280">Review every field before submitting. Sensitive fields (SSN, A-number) were skipped.</p>
-      <button class="btn btn-secondary" id="btn-back" style="margin-top:12px">Back</button>
-    `);
-    document.getElementById("btn-back").addEventListener("click", () => renderPaired(Date.now()));
   }
 }
 async function disconnect() {

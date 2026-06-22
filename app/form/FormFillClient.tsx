@@ -43,6 +43,8 @@ import { useTranslation } from "@/components/i18n/TranslationProvider";
 import { getFormFile } from "@/lib/formFileStore";
 import { createClient } from "@/lib/supabase/client";
 import {
+  isSensitiveContext,
+  isSensitiveName,
   mergeDocumentFields,
   profileToValues,
   resolveField,
@@ -60,6 +62,7 @@ import {
   saveForm,
   type SavedForm,
 } from "@/lib/autofill/formProgress";
+import { getSavedInfo, overlayValues, recordEntries } from "@/lib/savedInfo";
 
 interface RenderedPage {
   pageIndex: number;
@@ -200,6 +203,68 @@ function contextFor(box: FieldBox, items: TextItem[] | undefined): string {
   return label.replace(/\s+/g, " ").slice(0, 160);
 }
 
+// For a CHECKBOX/radio widget, the meaningful label is the OPTION text to its
+// RIGHT on the same row (e.g. the W-9's "Individual/sole proprietor",
+// "C corporation"), NOT the section header to its left/above. Collect text
+// starting just right of the box and stop at the first large horizontal gap
+// (the next checkbox/column) so we don't absorb the next option's label.
+function rightOfWidgetLabel(box: FieldBox, items: TextItem[] | undefined): string {
+  if (!items || items.length === 0) return "";
+  const cy = box.top + box.height / 2;
+  const row = items
+    .filter((t) => {
+      const tcy = t.y - t.h / 2; // approx vertical center of the text
+      return Math.abs(tcy - cy) <= Math.max(box.height, 10) && t.x >= box.left + box.width - 2;
+    })
+    .sort((a, b) => a.x - b.x);
+  if (row.length === 0) return "";
+  const picked: TextItem[] = [];
+  let prevEnd = box.left + box.width;
+  for (const t of row) {
+    const gap = t.x - prevEnd;
+    if (picked.length > 0 && gap > Math.max(14, t.h * 1.6)) break;
+    picked.push(t);
+    prevEnd = t.x + t.w;
+    if (picked.map((p) => p.str).join(" ").length > 55) break;
+  }
+  return picked.map((t) => t.str).join(" ").replace(/\s+/g, " ").trim().slice(0, 60);
+}
+
+// A generous text neighborhood around a field, used ONLY to decide sensitivity
+// (never for display). Captures a heading sitting just above the box — e.g. the
+// W-9's "Social security number" / "Employer identification number" above their
+// digit grids — so a field with a cryptic AcroForm name still flags sensitive.
+function sensitivityContext(box: FieldBox, items: TextItem[] | undefined): string {
+  if (!items || items.length === 0) return "";
+  const cx = box.left + box.width / 2;
+  const cy = box.top + box.height / 2;
+  // Vertical reach is ASYMMETRIC and FIXED (not height-scaled), measured against
+  // the real W-9 at RENDER_SCALE 1.5:
+  //   - A heading like "Social security number" / "Employer identification number"
+  //     sits ~31 px ABOVE the center of its digit grid (f1_11..f1_15), so we reach
+  //     UP ~40 px to keep capturing those (they MUST flag sensitive).
+  //   - But the dense IRS micro-text on the NEXT line below a field is what wrongly
+  //     bled in before: "List account number(s)" sits only ~17 px BELOW the City/
+  //     state/ZIP box (f1_08). So we reach DOWN only ~12 px — short of that line —
+  //     which clears the City/ZIP over-flag.
+  //   - A FIXED cap (independent of box height) also stops a TALL box like the
+  //     requester field (f1_09, ~57 px) from inflating its reach down to the SSN
+  //     heading ~88 px away, which is what wrongly flagged it before.
+  const reachUp = 40;
+  const reachDown = 12;
+  return items
+    .filter((t) => {
+      const tcy = t.y - t.h / 2;
+      const dv = tcy - cy; // negative = text ABOVE the field center
+      const withinV = dv < 0 ? -dv <= reachUp : dv <= reachDown;
+      return withinV && Math.abs(t.x - cx) <= 260;
+    })
+    .map((t) => t.str)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .slice(0, 240);
+}
+
 // Clean, short display name for a field BEFORE Haiku replies — turns the form's
 // raw legalese into something readable. Haiku later replaces it with an even
 // simpler, plain-language label.
@@ -218,12 +283,59 @@ const KEY_DISPLAY: Record<string, string> = {
   arrival: "Date of arrival",
 };
 function cleanLabel(raw: string): string {
-  if (!raw) return "Form field";
+  if (!raw) return "This field";
+  // 1) Known semantic fields → clean canonical name.
   const m = LABEL_PATTERNS.find((p) => p.re.test(raw));
   if (m && KEY_DISPLAY[m.key]) return KEY_DISPLAY[m.key];
-  const cleaned = raw.replace(/^[\d.\s)(–-]+/, "").trim();
-  const short = cleaned.split(/\s+/).slice(0, 4).join(" ");
-  return short || "Form field";
+  // 2) Strip instruction noise, numbering, and punctuation that bleeds in from a
+  //    dense PDF text layer (e.g. "1 Name of entity ... on line 2", "see page 3").
+  let s = raw
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\b(see|go to|enter|check the?|complete)\b[^,.]*/gi, " ")
+    .replace(/\bon (page|line)\s*\d*\b/gi, " ")
+    .replace(/\b(see )?instructions?\b/gi, " ")
+    .replace(/\bonly one of the\b/gi, " ")
+    .replace(/\bif (different|any|applicable)\b[^,.]*/gi, " ")
+    .replace(/[.,;:/]+/g, " ")
+    .replace(/^[\s\d]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  // 3) Common-keyword fallbacks for the remaining noun phrase.
+  if (/business name/i.test(s)) return "Business name";
+  if (/\bname\b/i.test(s)) return "Name";
+  if (/\baddress\b/i.test(s)) return "Address";
+  if (/city|state|zip/i.test(s)) return "City, state, ZIP";
+  if (/account/i.test(s)) return "Account number";
+  if (/exempt/i.test(s)) return "Exemption code";
+  if (/classif|individual|corporation|partnership|\bllc\b|trust|estate/i.test(s)) return "Tax classification";
+  // 4) Short, tidy fallback.
+  s = s.split(" ").slice(0, 4).join(" ");
+  if (!s) return "This field";
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// Whether a field is worth showing. Dense forms (e.g. the W-9) expose lots of
+// checkbox/instruction "fields" that aren't real fillable blanks — we hide those
+// so the user sees only meaningful fields: anything filled, anything sensitive
+// (they enter it), or anything with a recognizable fillable label.
+const USEFUL_LABEL_RE =
+  /\b(name|address|street|city|state|zip|postal|country|nationality|phone|tel|email|e-mail|date|birth|dob|business|company|employer|account|apt|suite|county|ssn|tax id|ein|itin)\b/i;
+function isUsefulField(f: FieldBox): boolean {
+  // Surface checkboxes too — never silently drop a detected field. The user
+  // reviews/toggles them in the panel so nothing is left blank.
+  if (f.kind === "checkbox") return true;
+  if (f.id === "flat-note") return true;
+  if (f.value && f.value.trim()) return true; // filled
+  if (f.flag === "sensitive") return true; // user enters it themselves
+  return USEFUL_LABEL_RE.test(f.name || "");
+}
+
+// Checkbox value model: we store a checkbox's state in the same `value` string
+// the text inputs use. A truthy marker ("true"/"X"/"yes"/"on"/"1") = checked;
+// empty = unchecked. The PDF write step uses this to call check()/uncheck().
+const CHECKED_VALUE = "true";
+function isChecked(v: string | undefined): boolean {
+  return /^(true|x|yes|on|1|checked)$/i.test((v ?? "").trim());
 }
 
 export default function FormFillClient({
@@ -235,6 +347,12 @@ export default function FormFillClient({
 }) {
   const { t } = useTranslation();
   const ff = t.dashboard.formFill;
+  // Translatable strings added by the form-filler that may not yet be present in
+  // every cached language bundle (they're merged into en.json via tmp_i18n).
+  // Read the live value when available, else fall back to the English provided
+  // here so the UI is always populated. New keys live under dashboard.formFill.*.
+  const ffx = ff as unknown as Record<string, string | undefined>;
+  const tt = (key: string, fallback: string): string => ffx[key] ?? fallback;
   const searchParams = useSearchParams();
 
   const srcId = searchParams.get("src");
@@ -270,6 +388,10 @@ export default function FormFillClient({
   const pageTextsRef = useRef<TextItem[][]>([]);
   const [docsLoaded, setDocsLoaded] = useState(false);
   const [formSummary, setFormSummary] = useState("");
+  // Preview-first: an uploaded form renders blank until the user clicks "Fill
+  // out with AI". aiTriggered gates both the deterministic fill and the Haiku pass.
+  const [aiTriggered, setAiTriggered] = useState(false);
+  const [aiRunning, setAiRunning] = useState(false);
   // Save / resume progress (browser-local).
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [savedForms, setSavedForms] = useState<SavedForm[]>([]);
@@ -284,31 +406,39 @@ export default function FormFillClient({
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      let merged = baseValues;
       try {
         const sb = createClient();
         const {
           data: { user },
         } = await sb.auth.getUser();
-        if (!user) return;
-        const { data } = await sb
-          .from("documents")
-          .select("extracted_fields")
-          .eq("user_id", user.id);
-        if (cancelled || !data) return;
-        let merged = baseValues;
-        for (const row of data) {
-          merged = mergeDocumentFields(
-            merged,
-            (row as { extracted_fields: Record<string, string> | null }).extracted_fields,
-          );
+        if (user) {
+          const { data } = await sb
+            .from("documents")
+            .select("extracted_fields")
+            .eq("user_id", user.id);
+          if (data) {
+            for (const row of data) {
+              merged = mergeDocumentFields(
+                merged,
+                (row as { extracted_fields: Record<string, string> | null }).extracted_fields,
+              );
+            }
+          }
         }
-        if (!cancelled) setValues(merged);
       } catch {
         /* keep profile-only values on failure */
       } finally {
-        // Signal (success OR failure) that document fields are settled, so the
-        // AI mapping pass runs with the richest data available.
-        if (!cancelled) setDocsLoaded(true);
+        // Always fill any remaining gaps from the user's saved "My Information"
+        // (previously-entered non-sensitive answers) — even when not signed in or
+        // there are no documents. overlayValues only writes where a key is still
+        // empty, so profile/document values are never clobbered.
+        if (!cancelled) {
+          setValues(overlayValues(merged, getSavedInfo()));
+          // Signal that document fields are settled, so the AI mapping pass runs
+          // with the richest data available.
+          setDocsLoaded(true);
+        }
       }
     })();
     return () => {
@@ -477,9 +607,29 @@ export default function FormFillClient({
               if (kind !== "checkbox") {
                 const label = contextFor(box, pageTexts[pageIndex]);
                 box.name = cleanLabel(label); // readable name (Haiku refines it)
-                const resolved = resolveField(label || name, values);
+                // Decide sensitivity from the cryptic name OR the visible label OR
+                // a heading in the surrounding text — this is what catches the
+                // W-9's SSN/EIN grids (field names like "f1_11" with a
+                // "Social security number" heading just above).
+                // Only let the WIDE neighborhood flag sensitive when it contains a
+                // high-specificity phrase (isSensitiveContext) — so the SSN/EIN
+                // headings flag their grids, but a name/address field near stray
+                // "account"/"card"/"bank" prose on some other form does not.
+                const ctx = sensitivityContext(box, pageTexts[pageIndex]);
+                const resolved = resolveField(
+                  label || name,
+                  values,
+                  isSensitiveContext(ctx) ? ctx : undefined,
+                );
                 box.flag = resolved.flag;
                 box.value = resolved.value;
+              } else {
+                // Surface checkboxes with the OPTION text to their right (e.g. the
+                // W-9's "Individual/sole proprietor", "C corporation") so each is
+                // distinct and accurate — not a collapsed section header. Never
+                // auto-check (value "" = unchecked).
+                const right = rightOfWidgetLabel(box, pageTexts[pageIndex]);
+                box.name = right || cleanLabel(contextFor(box, pageTexts[pageIndex]));
               }
               acroBoxes.push(box);
             });
@@ -521,6 +671,7 @@ export default function FormFillClient({
       // time win over auto-fill, and are marked edited so Haiku won't change them).
       const saved = getProgress(progressKey(label, bytes.length));
       if (saved) {
+        // A resumed form is already filled — restore it and skip the preview gate.
         for (const b of finalBoxes) {
           const v = saved.values[b.id];
           if (v) {
@@ -530,12 +681,20 @@ export default function FormFillClient({
           }
         }
         setSavedAt(saved.savedAt);
+        setAiTriggered(true);
       } else {
+        // Fresh upload → PREVIEW: render the blank form, fill only on the
+        // "Fill out with AI" click. Clear the deterministic auto-fill for now.
         setSavedAt(null);
+        finalBoxes = finalBoxes.map((b) =>
+          b.kind === "checkbox" || b.id === "flat-note" ? b : { ...b, value: "", flag: "missing" },
+        );
+        setAiTriggered(false);
       }
 
       pageTextsRef.current = pageTexts;
       aiDoneRef.current = false;
+      setAiRunning(false);
       setIsFlat(finalFlat);
       setPages(rendered);
       setFields(finalBoxes);
@@ -567,6 +726,17 @@ export default function FormFillClient({
     setFields((prev) => prev.map((f) => (f.id === id ? { ...f, value } : f)));
   }
 
+  // Toggle a checkbox field's checked state in the shared `value` model, and
+  // mark it edited so the AI pass / re-render never overwrites the user's choice.
+  function toggleCheckbox(id: string, checked: boolean) {
+    editedIds.current.add(id);
+    setFields((prev) =>
+      prev.map((f) =>
+        f.id === id ? { ...f, value: checked ? CHECKED_VALUE : "", flag: "auto" as FieldFlag } : f,
+      ),
+    );
+  }
+
   // ── AI mapping pass (Haiku) ──────────────────────────────────────────────
   // Hand every detected field's nearby label + the user's data to Haiku, which
   // decides what value belongs in each. Runs ONCE per form, after the fast
@@ -579,11 +749,16 @@ export default function FormFillClient({
     // First-page visible text helps Haiku identify the form + read each field in
     // context (improves accuracy and powers the "About this form" summary).
     const formText = (texts[0] ?? []).map((t) => t.str).join(" ").replace(/\s+/g, " ").slice(0, 2500);
+    // Give Haiku a ready-made combined "City, State ZIP" so a single combined
+    // field (like the W-9's line 6) fills correctly, not just the city.
+    const region = [data.state, data.zip].filter(Boolean).join(" ");
+    const cityStateZip = [data.city, region].filter(Boolean).join(", ");
+    const augmentedData = { ...data, ...(cityStateZip ? { cityStateZip } : {}) };
     try {
       const res = await fetch("/api/form-assist/map", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fields: reqFields, data, formText }),
+        body: JSON.stringify({ fields: reqFields, data: augmentedData, formText }),
       });
       if (!res.ok) return; // keep the deterministic fill
       const json = (await res.json()) as {
@@ -606,6 +781,21 @@ export default function FormFillClient({
           if (editedIds.current.has(b.id)) return labelled; // keep their value
           if (m.sensitive) return { ...labelled, value: "", flag: "sensitive" as FieldFlag };
           if (m.value) return { ...labelled, value: m.value, flag: "auto" as FieldFlag };
+          // Haiku says NOT sensitive and has no value. Only relax a "sensitive"
+          // flag if the field isn't INDEPENDENTLY provably sensitive — so a
+          // mis-grabbed "City" can be cleared, but a real SSN/EIN box (cryptic
+          // name + a "Social security number" heading) stays red even if the
+          // model missed it.
+          if (b.flag === "sensitive") {
+            const proven =
+              isSensitiveName(b.name || "") ||
+              isSensitiveName(m.label || "") ||
+              isSensitiveContext(contextFor(b, texts[b.pageIndex] ?? []) || "") ||
+              isSensitiveContext(sensitivityContext(b, texts[b.pageIndex] ?? []) || "");
+            return proven
+              ? { ...labelled, value: "", flag: "sensitive" as FieldFlag }
+              : { ...labelled, value: "", flag: "missing" as FieldFlag };
+          }
           return labelled; // model found no value → keep what we had, nicer label
         }),
       );
@@ -614,13 +804,36 @@ export default function FormFillClient({
     }
   }
 
-  // Trigger the AI pass once the form is rendered AND document fields are merged.
+  // "Fill out with AI": deterministic fill immediately from the saved profile,
+  // then the Haiku pass refines it (via the effect below).
+  function runFill() {
+    setFields((prev) =>
+      prev.map((b) => {
+        if (b.kind === "checkbox" || b.id === "flat-note" || editedIds.current.has(b.id)) return b;
+        const label = b.id.startsWith("lbl-")
+          ? b.name
+          : contextFor(b, pageTextsRef.current[b.pageIndex] ?? []);
+        const ctx = sensitivityContext(b, pageTextsRef.current[b.pageIndex] ?? []);
+        const r = resolveField(
+          label || b.name,
+          values,
+          isSensitiveContext(ctx) ? ctx : undefined,
+        );
+        return { ...b, value: r.value, flag: r.flag };
+      }),
+    );
+    setAiTriggered(true);
+  }
+
+  // Run the AI pass once the user has triggered the fill AND document fields are
+  // merged. (Resumed forms set aiTriggered=true on load, so they refine too.)
   useEffect(() => {
-    if (status !== "ready" || !docsLoaded || aiDoneRef.current) return;
+    if (status !== "ready" || !docsLoaded || !aiTriggered || aiDoneRef.current) return;
     aiDoneRef.current = true;
-    void enhanceWithAI(fields, pageTextsRef.current, values);
+    setAiRunning(true);
+    void enhanceWithAI(fields, pageTextsRef.current, values).finally(() => setAiRunning(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, docsLoaded]);
+  }, [status, docsLoaded, aiTriggered]);
 
   // User picked a PDF of the form they want filled. Kept in memory only.
   async function onPickForm(e: React.ChangeEvent<HTMLInputElement>) {
@@ -674,6 +887,14 @@ export default function FormFillClient({
     if (!pdfBytesRef.current) return;
     const vals: Record<string, string> = {};
     for (const f of fields) if (f.value) vals[f.id] = f.value;
+    // Remember the non-sensitive answers the user typed so they auto-fill next
+    // time (recordEntries maps each label→canonical key and drops sensitive ones;
+    // checkboxes are excluded — their "true"/"" value isn't a reusable answer).
+    recordEntries(
+      fields
+        .filter((f) => f.kind !== "checkbox" && f.flag !== "sensitive" && f.value)
+        .map((f) => ({ label: f.name ?? f.id, value: f.value })),
+    );
     const ok = saveForm({
       key: progressKey(sourceLabel || "form", pdfBytesRef.current.length),
       label: sourceLabel || "Your form",
@@ -718,7 +939,17 @@ export default function FormFillClient({
         for (const box of fields) {
           // Multi-widget fields share a name; the id is `${name}#${widget}`.
           const baseName = box.id.includes("#") ? box.id.split("#")[0] : box.id;
-          if (box.kind === "checkbox") continue; // checkboxes left to the user
+          if (box.kind === "checkbox") {
+            // Write the user's checkbox choice. A truthy value means checked.
+            try {
+              const cb = form.getCheckBox(baseName);
+              if (isChecked(box.value)) cb.check();
+              else cb.uncheck();
+            } catch {
+              /* not actually a checkbox in pdf-lib — skip */
+            }
+            continue;
+          }
           try {
             const tf = form.getTextField(baseName);
             if (box.value) tf.setText(box.value);
@@ -763,10 +994,12 @@ export default function FormFillClient({
   }
 
   // Flag styling tokens.
+  // Translucent backgrounds so the underlying PDF text stays readable through the
+  // overlay; borders + text remain fully opaque so each field is still legible.
   const flagTone: Record<FieldFlag, string> = {
-    auto: "border-success-500 bg-success-100 text-success-900 font-semibold",
-    missing: "border-caution-400 bg-caution-50 text-caution-800",
-    sensitive: "border-danger-400 bg-danger-50 text-danger-800",
+    auto: "border-success-500 bg-success-100/40 text-success-900 font-semibold",
+    missing: "border-caution-400 bg-caution-50/40 text-caution-800",
+    sensitive: "border-danger-400 bg-danger-50/40 text-danger-800",
   };
   const flagLabel: Record<FieldFlag, string> = {
     auto: ff.autoFilled,
@@ -783,13 +1016,17 @@ export default function FormFillClient({
   // nudge the user to upload a document so auto-fill can cover more (sensitive
   // fields are excluded — uploading never fills those).
   const textFields = useMemo(
-    () => fields.filter((f) => f.kind !== "checkbox"),
+    () => fields.filter(isUsefulField),
     [fields],
   );
   // Fields the user can fill in-app = everything except sensitive (those are
   // entered on the official site, never here).
+  // Checkboxes are surfaced for review/toggling but excluded from the progress
+  // math: an unchecked box is correct-by-default (e.g. the W-9's mutually
+  // exclusive tax-class boxes), so counting them as "missing" would make the
+  // bar un-completable and fire a bogus "upload a document" nudge.
   const fillableFields = useMemo(
-    () => textFields.filter((f) => f.flag !== "sensitive"),
+    () => textFields.filter((f) => f.flag !== "sensitive" && f.kind !== "checkbox"),
     [textFields],
   );
   // "Filled" = ANY fillable field that now has a value — whether auto-filled OR
@@ -809,22 +1046,6 @@ export default function FormFillClient({
   return (
     <main className="min-h-screen bg-background">
       <div className="mx-auto max-w-6xl px-4 py-8 md:px-6">
-        <div className="mb-2">
-          <Link
-            href="/dashboard"
-            className="inline-flex items-center gap-1.5 text-sm font-semibold text-link underline-offset-2 hover:underline focus-visible:outline-none focus-visible:shadow-focus"
-          >
-            <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4" fill="currentColor">
-              <path
-                fillRule="evenodd"
-                d="M12.7 5.3a1 1 0 0 1 0 1.4L9.42 10l3.3 3.3a1 1 0 1 1-1.42 1.4l-4-4a1 1 0 0 1 0-1.4l4-4a1 1 0 0 1 1.4 0Z"
-                clipRule="evenodd"
-              />
-            </svg>
-            {t.common.back}
-          </Link>
-        </div>
-
         <h1 className="font-display text-2xl font-bold text-text md:text-3xl">
           {formMeta.benefitName ? `Fill Out: ${formMeta.benefitName}` : ff.title}
         </h1>
@@ -927,16 +1148,23 @@ export default function FormFillClient({
           </button>
         )}
         {status === "need-upload" && (
-          <div className="mt-3 text-center text-sm text-text-muted">
-            <p>Or try a real government form, no upload needed:</p>
-            <div className="mt-1.5 flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
-              <button type="button" onClick={() => loadSample("/forms/irs-w9-taxpayer-info.pdf", "IRS Form W-9")} className="font-semibold text-link underline-offset-2 hover:underline focus-visible:outline-none">
-                IRS W-9
-              </button>
-              <button type="button" onClick={() => loadSample("/forms/uscis-i-765-work-permit.pdf", "USCIS Form I-765 (Work Permit)")} className="font-semibold text-link underline-offset-2 hover:underline focus-visible:outline-none">
-                USCIS I-765 (Work Permit)
-              </button>
-            </div>
+          <div className="mx-auto mt-5 max-w-md rounded-[--radius-lg] border-2 border-harbor-300 bg-harbor-50 p-5 text-center shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-wide text-harbor-700">
+              {tt("demoLabel", "Example form — for the judges")}
+            </p>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm text-text-muted">
+              {tt(
+                "demoDescription",
+                "No upload needed — this is a real IRS Form W-9 you can try right now to watch Wayfinder fill out a real government form.",
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={() => loadSample("/forms/irs-w9-taxpayer-info.pdf", "IRS Form W-9")}
+              className="mt-4 inline-flex items-center justify-center gap-2 rounded-[--radius-md] bg-primary px-7 py-4 text-lg font-semibold text-on-primary shadow-sm transition hover:bg-primary-hover hover:shadow-md active:scale-[0.98] focus-visible:outline-none focus-visible:shadow-focus"
+            >
+              {tt("tryDemo", "Try it with IRS Form W-9")}
+            </button>
           </div>
         )}
         {status === "need-upload" && savedForms.length > 0 && (
@@ -982,19 +1210,56 @@ export default function FormFillClient({
 
         {status === "ready" && (
           <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
-            {/* ── "About this form" summary (Haiku-identified) ──────────── */}
-            <div className="lg:col-span-2 rounded-[--radius-lg] border border-harbor-200 bg-harbor-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-harbor-700">About this form</p>
-              <p className="mt-1 text-sm text-text">
-                {formSummary || `${sourceLabel || "Your form"} — reading the form and filling what we can from your saved information…`}
-              </p>
-              <p className="mt-2 text-xs text-text-muted">
-                Green = filled for you. Yellow = needs your input. Red = sensitive (enter it yourself on the official site). Check every field before you use the form.
-              </p>
-            </div>
+            {/* ── Preview + "Fill out with AI", or the summary once filled ─── */}
+            {!aiTriggered ? (
+              <div className="lg:col-span-2 flex flex-col items-start justify-between gap-3 rounded-[--radius-lg] border border-harbor-200 bg-harbor-50 p-4 sm:flex-row sm:items-center">
+                <div>
+                  <p className="text-sm font-semibold text-text">Preview: {sourceLabel || "your form"}</p>
+                  <p className="mt-0.5 text-sm text-text-muted">
+                    Look over the blank form below, then let AI fill it from your saved info. Sensitive fields are never filled — you enter those yourself.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={runFill}
+                  className="inline-flex flex-shrink-0 items-center gap-2 rounded-[--radius-md] bg-primary px-5 py-3 text-base font-semibold text-on-primary shadow-sm transition hover:bg-primary-hover active:scale-[0.98] focus-visible:outline-none focus-visible:shadow-focus"
+                >
+                  ⚡ Fill out with AI
+                </button>
+              </div>
+            ) : (
+              <div className="lg:col-span-2 rounded-[--radius-lg] border border-harbor-200 bg-harbor-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-harbor-700">
+                  About this form{aiRunning ? " · filling with AI…" : ""}
+                </p>
+                <p className="mt-1 text-sm text-text">
+                  {formSummary || `${sourceLabel || "Your form"} — reading the form and filling what we can from your saved information…`}
+                </p>
+                <p className="mt-2 text-xs text-text-muted">
+                  Green = filled for you. Yellow = needs your input. Red = sensitive (enter it yourself on the official site). Check every field before you use the form.
+                </p>
+              </div>
+            )}
 
             {/* ── Rendered pages with positioned overlay inputs ─────────── */}
-            <div className="order-2 lg:order-1">
+            <div className="relative order-2 lg:order-1">
+              {/* Friendly, NON-modal loading state while the AI fills the form.
+                  Pinned to the top so the user still sees the pages filling in
+                  beneath it. Mirrors the spinner pattern used elsewhere. */}
+              {aiRunning && (
+                <div
+                  className="pointer-events-none sticky top-4 z-20 mx-auto mb-3 flex max-w-md items-center justify-center gap-3 rounded-[--radius-md] border border-harbor-200 bg-harbor-50/95 px-5 py-3 text-center shadow-md backdrop-blur-sm"
+                  aria-live="polite"
+                >
+                  <span
+                    className="inline-block h-5 w-5 flex-shrink-0 animate-spin rounded-full border-2 border-harbor-200 border-t-harbor-600"
+                    aria-hidden="true"
+                  />
+                  <span className="text-sm font-semibold text-harbor-700">
+                    {tt("aiFilling", "Filling out your form with AI…")}
+                  </span>
+                </div>
+              )}
               {isFlat && (
                 <p className="mb-3 rounded-[--radius-md] bg-caution-50 px-4 py-3 text-sm font-medium text-caution-700 ring-1 ring-caution-100">
                   {ff.noFields}
@@ -1018,26 +1283,47 @@ export default function FormFillClient({
                     {/* Overlay inputs, positioned as % of the rendered size so
                         they scale with the responsive image. */}
                     {fields
-                      .filter((f) => f.pageIndex === pg.pageIndex && f.kind !== "checkbox")
-                      .map((f) => (
-                        <input
-                          key={f.id}
-                          type="text"
-                          value={f.value}
-                          onChange={(e) => updateField(f.id, e.target.value)}
-                          aria-label={`${f.name} — ${flagLabel[f.flag]}`}
-                          title={`${f.name} — ${flagLabel[f.flag]}`}
-                          placeholder={f.flag === "sensitive" ? "" : flagLabel[f.flag]}
-                          className={`absolute rounded-sm px-1 text-[12px] leading-tight outline-none focus:z-10 focus:shadow-focus ${flagTone[f.flag]}`}
-                          style={{
-                            left: `${(f.left / pg.width) * 100}%`,
-                            top: `${(f.top / pg.height) * 100}%`,
-                            width: `${(f.width / pg.width) * 100}%`,
-                            height: `${(f.height / pg.height) * 100}%`,
-                            minHeight: 18,
-                          }}
-                        />
-                      ))}
+                      .filter((f) => f.pageIndex === pg.pageIndex && isUsefulField(f))
+                      .map((f) =>
+                        f.kind === "checkbox" ? (
+                          // Real checkbox control sitting over the form's box.
+                          <input
+                            key={f.id}
+                            type="checkbox"
+                            checked={isChecked(f.value)}
+                            onChange={(e) => toggleCheckbox(f.id, e.target.checked)}
+                            aria-label={f.name || tt("checkboxLabel", "Checkbox")}
+                            title={f.name || tt("checkboxLabel", "Checkbox")}
+                            className="absolute z-10 cursor-pointer accent-primary outline-none focus:shadow-focus"
+                            style={{
+                              left: `${(f.left / pg.width) * 100}%`,
+                              top: `${(f.top / pg.height) * 100}%`,
+                              width: `${(f.width / pg.width) * 100}%`,
+                              height: `${(f.height / pg.height) * 100}%`,
+                              minWidth: 14,
+                              minHeight: 14,
+                            }}
+                          />
+                        ) : (
+                          <input
+                            key={f.id}
+                            type="text"
+                            value={f.value}
+                            onChange={(e) => updateField(f.id, e.target.value)}
+                            aria-label={`${f.name} — ${flagLabel[f.flag]}`}
+                            title={`${f.name} — ${flagLabel[f.flag]}`}
+                            placeholder={f.flag === "sensitive" ? "" : flagLabel[f.flag]}
+                            className={`absolute rounded-sm px-1 text-[12px] leading-tight outline-none focus:z-10 focus:shadow-focus ${flagTone[f.flag]}`}
+                            style={{
+                              left: `${(f.left / pg.width) * 100}%`,
+                              top: `${(f.top / pg.height) * 100}%`,
+                              width: `${(f.width / pg.width) * 100}%`,
+                              height: `${(f.height / pg.height) * 100}%`,
+                              minHeight: 18,
+                            }}
+                          />
+                        ),
+                      )}
                   </div>
                 ))}
               </div>
@@ -1100,7 +1386,40 @@ export default function FormFillClient({
                   )}
 
                   <ul className="mt-4 flex flex-col gap-4">
-                    {textFields.map((f) => (
+                    {textFields.map((f) =>
+                      f.kind === "checkbox" ? (
+                        // Checkbox field: a labeled toggle the user reviews and
+                        // sets. Wired into the same `fields` value model so the
+                        // download step writes the box.
+                        <li
+                          key={f.id}
+                          className="rounded-[--radius-md] border border-border bg-surface-2 p-3"
+                        >
+                          <label
+                            htmlFor={`field-${f.id}`}
+                            className="flex cursor-pointer items-start gap-3"
+                          >
+                            <input
+                              id={`field-${f.id}`}
+                              type="checkbox"
+                              checked={isChecked(f.value)}
+                              onChange={(e) => toggleCheckbox(f.id, e.target.checked)}
+                              className="mt-0.5 h-5 w-5 flex-shrink-0 cursor-pointer accent-primary focus-visible:shadow-focus"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-sm font-semibold text-text">
+                                {f.name}
+                              </span>
+                              {f.help && (
+                                <span className="mt-0.5 block text-xs text-text-muted">{f.help}</span>
+                              )}
+                              <span className="mt-0.5 block text-xs text-text-faint">
+                                {tt("checkboxHint", "Check this box if it applies to you.")}
+                              </span>
+                            </span>
+                          </label>
+                        </li>
+                      ) : (
                       <li key={f.id} className={`rounded-[--radius-md] border p-3 ${
                         f.flag === "sensitive"
                           ? "border-danger-200 bg-danger-50/50"
@@ -1131,7 +1450,7 @@ export default function FormFillClient({
                         {f.flag === "sensitive" ? (
                           <div>
                             <p className="mb-2 text-xs font-medium text-danger-700">
-                              Enter this directly on the official site — we never see it.
+                              Enter this information on your own — we never see it.
                             </p>
                             {formMeta.applyLink && (
                               <a

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { EligibilityBenefit } from "@/lib/types";
 import { useTranslation } from "@/components/i18n/TranslationProvider";
@@ -18,7 +18,7 @@ interface Props {
   benefits: EligibilityBenefit[];
   attorneyNeeded: boolean;
   rulesLastChecked: string;
-  onSwitchTab: (tab: "plan" | "documents" | "form" | "help" | "progress") => void;
+  onSwitchTab: (tab: "plan" | "documents" | "form" | "help") => void;
   formInfoById?: Record<string, FormInfo>;
   // The user's state (2-letter), used to open their real state benefits portal.
   userState?: string;
@@ -74,7 +74,6 @@ function deadlineInfo(
 
 export default function ActionPlan({
   benefits,
-  attorneyNeeded,
   rulesLastChecked,
   onSwitchTab,
   formInfoById,
@@ -84,15 +83,7 @@ export default function ActionPlan({
   const router = useRouter();
   const [expanded, setExpanded] = useState<string | null>(null);
   // When set, the AI autofill side panel is open for this portal.
-  const [agentFor, setAgentFor] = useState<{ name: string; url: string } | null>(null);
-  // Show the mock-portal test affordance on local machines (dev OR a local
-  // production build), but never on the deployed site. SSR-safe: server snapshot
-  // is false, client reads the hostname after hydration.
-  const isLocal = useSyncExternalStore(
-    () => () => {},
-    () => /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname),
-    () => false,
-  );
+  const [agentFor, setAgentFor] = useState<{ name: string; url: string; attorneyNeeded: boolean } | null>(null);
   // Pending attorney-form confirmation: holds the benefit awaiting confirm.
   const [attorneyConfirm, setAttorneyConfirm] = useState<{
     benefitId: string;
@@ -183,36 +174,67 @@ export default function ActionPlan({
         )}
       </div>
 
-      {attorneyNeeded && (
-        <div className="mb-6 rounded-[--radius-md] border border-review-100 bg-review-50 px-5 py-4 text-sm font-semibold text-review-700">
-          {ap.attorney}
+      {/* A REAL no-login government application, styled as a benefit card: Iowa
+          HHS lets people apply as a guest for SNAP / FIP / Refugee Cash Assistance
+          with no account. A live feature, not a demo. */}
+      <div className="mb-6 overflow-hidden rounded-[--radius-lg] border border-border bg-harbor-50/40 shadow-sm ring-2 ring-harbor-300 transition-shadow hover:shadow-md">
+        <div className="p-5 md:p-6">
+          <div className="mb-3 flex flex-wrap items-start gap-2">
+            <span className={statusTone("likely_eligible")}>
+              <Dot className="text-current" />
+              {statusLabel("likely_eligible")}
+            </span>
+            <span className={`${BADGE_BASE} bg-harbor-600 text-white ring-1 ring-harbor-700`}>
+              {ap.demoBadge}
+            </span>
+            <span className={`${BADGE_BASE} bg-harbor-50 text-harbor-700 ring-1 ring-harbor-100`}>
+              {ap.attorney}
+            </span>
+          </div>
+          <h3 className="mb-2 font-display text-xl font-bold text-text">{ap.applyWithAiTitle}</h3>
+          <p className="mb-3 rounded-[--radius-md] border border-harbor-100 bg-surface/70 px-3 py-2 text-sm font-medium text-harbor-700">
+            {ap.demoNote}
+          </p>
+          <p className="mb-4 text-text">{ap.applyWithAiBody}</p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className={`${BADGE_BASE} bg-harbor-50 text-harbor-700`}>{ap.applyWithAiDeadline}</span>
+            <div className="flex flex-wrap gap-3">
+            <a
+              href="https://hhsservices.iowa.gov/apspssp/ssp.portal/applyForBenefits/guestLogin"
+              target="_blank"
+              rel="noopener noreferrer"
+              role="button"
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-[--radius-md] border-2 border-harbor-300 bg-surface px-4 py-2.5 text-sm font-semibold text-harbor-700 transition hover:border-harbor-500 hover:bg-harbor-50 active:scale-[0.98] focus-visible:outline-none"
+            >
+              {ap.sourceLink}
+            </a>
+            <button
+              onClick={() => setExpanded(expanded === "__iowa" ? null : "__iowa")}
+              aria-expanded={expanded === "__iowa"}
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-[--radius-md] bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary shadow-sm transition hover:bg-primary-hover hover:shadow-md active:scale-[0.98] focus-visible:outline-none"
+            >
+              {expanded === "__iowa" ? t.common.close : ap.details}
+            </button>
+            </div>
+          </div>
         </div>
-      )}
 
-      {/* Local-only: exercise the AI autofill agent end-to-end against the
-          built-in mock portal without a real government site. */}
-      {isLocal && (
-        <div className="mb-6 flex flex-wrap gap-2">
-          <button
-            onClick={() =>
-              setAgentFor({ name: "Mock Benefits Portal (dev)", url: `${window.location.origin}/dev/mock-portal` })
-            }
-            className="inline-flex items-center gap-2 rounded-[--radius-md] border border-dashed border-clay-400 bg-clay-50 px-4 py-2 text-sm font-semibold text-clay-700 hover:bg-clay-100"
-          >
-            ⚡ Test AI autofill on the mock portal (dev)
-          </button>
-          {/* A REAL no-login government application: Iowa HHS lets you apply as a
-              guest for SNAP / FIP / Refugee Cash Assistance — no account needed. */}
-          <button
-            onClick={() =>
-              setAgentFor({ name: "Iowa HHS — Apply as Guest (SNAP / FIP / RCA)", url: "https://hhsservices.iowa.gov/apspssp/ssp.portal/applyForBenefits/guestLogin" })
-            }
-            className="inline-flex items-center gap-2 rounded-[--radius-md] border border-dashed border-harbor-400 bg-harbor-50 px-4 py-2 text-sm font-semibold text-harbor-700 hover:bg-harbor-100"
-          >
-            ⚡ Test on Iowa guest portal (real, no login)
-          </button>
-        </div>
-      )}
+        {expanded === "__iowa" && (
+          <div className="border-t border-border bg-surface-2 p-5 md:p-6">
+            <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-text-muted">{ap.howItWorks}</h4>
+            <p className="mb-4 text-sm text-text-muted">{ap.applyWithAiHow}</p>
+            <button
+              onClick={() =>
+                setAgentFor({ name: "Iowa HHS — Apply as Guest (SNAP / FIP / RCA)", url: "https://hhsservices.iowa.gov/apspssp/ssp.portal/applyForBenefits/guestLogin", attorneyNeeded: true })
+              }
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-[--radius-md] bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary shadow-sm transition hover:bg-primary-hover hover:shadow-md active:scale-[0.98] focus-visible:outline-none focus-visible:shadow-focus"
+            >
+              {ap.applyWithAiButton}
+            </button>
+          </div>
+        )}
+      </div>
+
 
       <div className="flex flex-col gap-4">
         {benefits.map((benefit) => {
@@ -245,7 +267,20 @@ export default function ActionPlan({
                       {ap.attorney}
                     </span>
                   )}
+                  {benefit.verification?.status === "verified" && (
+                    <span className={`${BADGE_BASE} bg-success-50 text-success-700 ring-1 ring-success-100`}>
+                      <svg aria-hidden="true" viewBox="0 0 20 20" className="h-3 w-3" fill="currentColor"><path fillRule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0l-3.5-3.5a1 1 0 1 1 1.4-1.4l2.79 2.79 6.8-6.8a1 1 0 0 1 1.4 0Z" clipRule="evenodd" /></svg>
+                      {ap.verifiedBadge}
+                    </span>
+                  )}
                 </div>
+
+                {benefit.verification?.status === "flagged" && (
+                  <div className="mb-3 flex items-start gap-2 rounded-[--radius-md] bg-caution-50 px-3 py-2 text-sm text-caution-700 ring-1 ring-caution-100">
+                    <svg aria-hidden="true" viewBox="0 0 20 20" className="mt-0.5 h-4 w-4 flex-shrink-0" fill="currentColor"><path fillRule="evenodd" d="M8.49 2.6a1.7 1.7 0 0 1 3.02 0l6.4 11.3A1.7 1.7 0 0 1 16.4 16.5H3.6a1.7 1.7 0 0 1-1.51-2.6l6.4-11.3ZM10 7a1 1 0 0 0-1 1v3a1 1 0 1 0 2 0V8a1 1 0 0 0-1-1Zm0 7.6a1.15 1.15 0 1 0 0-2.3 1.15 1.15 0 0 0 0 2.3Z" clipRule="evenodd" /></svg>
+                    <span>{ap.flaggedNote}</span>
+                  </div>
+                )}
 
                 <h3 className="mb-2 font-display text-xl font-bold text-text">{benefit.name}</h3>
                 <p className="mb-4 text-text">{benefit.whyPlainLanguage}</p>
@@ -364,13 +399,13 @@ export default function ActionPlan({
                   <div className="flex flex-wrap gap-3">
                     {applyLink && (
                       <button
-                        onClick={() => setAgentFor({ name: benefit.name, url: applyUrlFor(benefit.id, userState, applyLink) })}
+                        onClick={() => setAgentFor({ name: benefit.name, url: applyUrlFor(benefit.id, userState, applyLink), attorneyNeeded: !!benefit.needsAttorney })}
                         className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-[--radius-md] bg-clay-600 px-5 py-3.5 text-base font-semibold text-white shadow-sm transition hover:bg-clay-700 active:scale-[0.98] focus-visible:outline-none"
                       >
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
                         </svg>
-                        Fill out with AI
+                        {ap.fillWithAiButton}
                       </button>
                     )}
                     <button
@@ -458,6 +493,7 @@ export default function ActionPlan({
           benefitName={agentFor.name}
           portalUrl={agentFor.url}
           onClose={() => setAgentFor(null)}
+          attorneyNeeded={agentFor.attorneyNeeded}
         />
       )}
     </div>

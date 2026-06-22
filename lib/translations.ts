@@ -22,6 +22,63 @@ function isValidStrings(obj: unknown): obj is UIStrings {
   );
 }
 
+// Deep-merge a (possibly incomplete or stale) translation OVER the English base
+// so every key the app reads always exists. Any key the translation is missing
+// falls back to English — this prevents `t.someKey` from being undefined (which
+// crashes the client with a "reload the page" error) and degrades gracefully to
+// English for untranslated bits instead of blanks.
+function deepMergeOverEnglish<T>(base: T, override: unknown): T {
+  if (Array.isArray(base)) {
+    // Only adopt the translated array if it has the same length (same shape);
+    // otherwise keep the English array.
+    return (Array.isArray(override) && override.length === base.length ? override : base) as T;
+  }
+  if (base && typeof base === "object") {
+    const ov = (override && typeof override === "object" ? override : {}) as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(base as Record<string, unknown>)) {
+      out[k] = deepMergeOverEnglish((base as Record<string, unknown>)[k], ov[k]);
+    }
+    return out as T;
+  }
+  // Primitive (string): use the translation if it's a non-empty string, else English.
+  return (typeof override === "string" && override.length > 0 ? override : base) as T;
+}
+
+function mergeStrings(translation: unknown): UIStrings {
+  return deepMergeOverEnglish(enStrings, translation);
+}
+
+// Completeness check: walk every key in `base` and require it to be present in
+// `obj`. Returns false if any key in `base` is missing/undefined in `obj`. For
+// nested objects we recurse; for arrays we require EQUAL length (a shorter
+// translated array means the file was generated against an older, smaller
+// en.json and is therefore incomplete); for primitives we only require the key
+// to EXIST in `obj` (key presence, NOT value equality — a complete-but-different
+// translation must pass). Cheap and side-effect-free.
+function hasAllKeys(base: unknown, obj: unknown): boolean {
+  if (Array.isArray(base)) {
+    if (!Array.isArray(obj) || obj.length !== base.length) return false;
+    for (let i = 0; i < base.length; i++) {
+      if (!hasAllKeys(base[i], obj[i])) return false;
+    }
+    return true;
+  }
+  if (base && typeof base === "object") {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+    const o = obj as Record<string, unknown>;
+    for (const k of Object.keys(base as Record<string, unknown>)) {
+      if (!(k in o) || o[k] === undefined) return false;
+      if (!hasAllKeys((base as Record<string, unknown>)[k], o[k])) return false;
+    }
+    return true;
+  }
+  // Primitive: only require the key to exist (the caller already checked `k in o`
+  // and that the value isn't undefined). Don't compare values — a real
+  // translation differs from English.
+  return true;
+}
+
 // Fetch translations from Supabase cache or generate via Claude
 export async function getTranslations(languageCode: string): Promise<UIStrings> {
   if (languageCode === "en") return enStrings;
@@ -38,7 +95,12 @@ export async function getTranslations(languageCode: string): Promise<UIStrings> 
       "utf8"
     );
     const parsed = JSON.parse(raw);
-    if (isValidStrings(parsed)) return parsed;
+    // Gate on completeness too: a static file generated against an older,
+    // smaller en.json passes isValidStrings (which only checks 3 keys) but is
+    // missing newer keys (e.g. dashboard.autofill). Falling through here lets
+    // the cache / live regeneration produce a complete translation instead of
+    // serving the stale file (whose gaps deepMerge would fill with English).
+    if (isValidStrings(parsed) && hasAllKeys(enStrings, parsed)) return mergeStrings(parsed);
   } catch {
     /* no static file yet — fall through to cache / live translation */
   }
@@ -60,9 +122,10 @@ export async function getTranslations(languageCode: string): Promise<UIStrings> 
   if (
     cached?.translations &&
     isValidStrings(cached.translations) &&
-    cached.translations.landing.hero.headline !== enStrings.landing.hero.headline
+    cached.translations.landing.hero.headline !== enStrings.landing.hero.headline &&
+    hasAllKeys(enStrings, cached.translations)
   ) {
-    return cached.translations;
+    return mergeStrings(cached.translations);
   }
 
   // Generate with Claude. If this throws (truncated / malformed output), let it
@@ -87,7 +150,7 @@ export async function getTranslations(languageCode: string): Promise<UIStrings> 
     );
   if (cacheError) console.error("[translations] cache write failed:", cacheError.message);
 
-  return translated;
+  return mergeStrings(translated);
 }
 
 function extractJson(text: string): string {

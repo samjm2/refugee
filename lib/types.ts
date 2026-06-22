@@ -117,6 +117,25 @@ export interface EligibilitySource {
   rowId: string;
 }
 
+export type VerificationVerdict = "verified" | "flagged" | "unverifiable";
+
+// One claim in the AI-generated action-plan text (the "why" sentence, a single
+// next-step, or the summary), audited by the INDEPENDENT verification pass
+// against the curated source record. Anything not "verified" is dropped/flagged
+// before display — never shown as fact.
+export interface VerifiedClaim {
+  field: "why" | "step" | "summary";
+  index?: number; // for field "step": which next-step (0-based) this refers to
+  text: string;
+  verdict: VerificationVerdict;
+  reason: string;
+}
+
+export interface BenefitVerification {
+  status: "verified" | "flagged";
+  claims: VerifiedClaim[];
+}
+
 export interface EligibilityBenefit {
   id: string;
   name: string;
@@ -130,6 +149,9 @@ export interface EligibilityBenefit {
   needsAttorney: boolean;
   sources: EligibilitySource[];
   verificationNote: string;
+  // Result of the independent post-write-up verification pass (optional so older
+  // saved results without it still parse).
+  verification?: BenefitVerification;
 }
 
 export interface FlaggedForHuman {

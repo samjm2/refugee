@@ -74,7 +74,9 @@ async function handleAgent(type: string, payload: unknown): Promise<unknown> {
     if (type === "agent-open") {
       const url = (payload as { url?: string })?.url;
       if (!url || !/^https?:\/\//.test(url)) return { ok: false, error: "Invalid portal URL." };
-      const tab = await chrome.tabs.create({ url, active: true });
+      // Open the portal in a BACKGROUND tab so the user stays on Wayfinder while
+      // the agent fills it. We only switch them to it at the end (focusPortal).
+      const tab = await chrome.tabs.create({ url, active: false });
       await setPortalTab(tab.id);
       // Wait for the content script to be reachable before returning.
       if (tab.id !== undefined) {
@@ -180,7 +182,7 @@ async function fillCurrentTab(values: Record<string, string>): Promise<{ ok: boo
 
 // Injected into the page — must be self-contained (no imports, no closures over outer scope).
 function fillFields(values: Record<string, string>): number {
-  const SENSITIVE_RE = /ssn|social.?security|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank/i;
+  const SENSITIVE_RE = /ssn|social.?security|\bein\b|employer.?id(entification)?(.?number)?|\bitin\b|individual.?taxpayer|taxpayer.?id|\btin\b|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank/i;
   let filled = 0;
   const inputs = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
     "input[type=text], input[type=email], input[type=tel], input[type=date], input:not([type]), textarea"

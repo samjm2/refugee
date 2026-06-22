@@ -13,7 +13,9 @@
       "features": "Features",
       "languages": "Languages",
       "signIn": "Sign in",
-      "getStarted": "Get started"
+      "getStarted": "Get started",
+      "signOut": "Sign out",
+      "continue": "Continue"
     },
     "hero": {
       "headline": "A new home begins with knowing your way.",
@@ -71,7 +73,11 @@
       "badge": "Your safety comes first",
       "title": "We never share your information with immigration enforcement.",
       "body": "Your documents are encrypted and owner-only. Wayfinder never fills sensitive identifiers, never submits forms, and every legal decision is made by a real, licensed person, not by a machine.",
-      "points": ["Encrypted & private", "Sources you can check", "Reviewed by humans"]
+      "points": [
+        "Encrypted & private",
+        "Sources you can check",
+        "Reviewed by humans"
+      ]
     },
     "finalCta": {
       "title": "Your way forward starts today.",
@@ -110,18 +116,47 @@
     "yes": "Yes",
     "no": "No",
     "immigrationOptions": {
-      "refugee_207": { "label": "Refugee", "note": "Admitted under section 207" },
-      "asylee_208": { "label": "Asylee", "note": "Asylum granted under section 208" },
-      "siv": { "label": "Special Immigrant Visa (SIV) holder", "note": "Afghan or Iraqi" },
-      "afghan_parolee": { "label": "Afghan humanitarian parolee" },
-      "ukrainian_parolee": { "label": "Ukrainian humanitarian parolee" },
-      "cuban_haitian_entrant": { "label": "Cuban or Haitian entrant" },
-      "trafficking_victim": { "label": "Certified victim of trafficking", "note": "T-visa or ORR letter" },
-      "amerasian": { "label": "Amerasian immigrant" },
-      "lpr_from_humanitarian": { "label": "Green card from refugee, asylee, or humanitarian status", "note": "This restores SNAP and Medicaid eligibility" },
-      "lpr_other": { "label": "Green card from another path" },
-      "us_citizen": { "label": "U.S. Citizen or U.S. National" },
-      "other_none": { "label": "Other, not sure, or none of these" }
+      "refugee_207": {
+        "label": "Refugee",
+        "note": "Admitted under section 207"
+      },
+      "asylee_208": {
+        "label": "Asylee",
+        "note": "Asylum granted under section 208"
+      },
+      "siv": {
+        "label": "Special Immigrant Visa (SIV) holder",
+        "note": "Afghan or Iraqi"
+      },
+      "afghan_parolee": {
+        "label": "Afghan humanitarian parolee"
+      },
+      "ukrainian_parolee": {
+        "label": "Ukrainian humanitarian parolee"
+      },
+      "cuban_haitian_entrant": {
+        "label": "Cuban or Haitian entrant"
+      },
+      "trafficking_victim": {
+        "label": "Certified victim of trafficking",
+        "note": "T-visa or ORR letter"
+      },
+      "amerasian": {
+        "label": "Amerasian immigrant"
+      },
+      "lpr_from_humanitarian": {
+        "label": "Green card from refugee, asylee, or humanitarian status",
+        "note": "This restores SNAP and Medicaid eligibility"
+      },
+      "lpr_other": {
+        "label": "Green card from another path"
+      },
+      "us_citizen": {
+        "label": "U.S. Citizen or U.S. National"
+      },
+      "other_none": {
+        "label": "Other, not sure, or none of these"
+      }
     },
     "language": {
       "question": "What language do you prefer?",
@@ -139,7 +174,9 @@
       "readDocuments": "Read my documents",
       "skip": "I don't have my documents — answer questions instead",
       "errorReadFailed": "We couldn't read your document. Please try again, or skip and answer the questions.",
-      "errorUnreachable": "We couldn't reach the document reader. Please try again, or skip and answer the questions."
+      "errorUnreachable": "We couldn't reach the document reader. Please try again, or skip and answer the questions.",
+      "exampleI94": "Use an example I-94 (for judges)",
+      "exampleI94Hint": "No documents handy? Load a sample I-94 to see how Wayfinder reads it."
     },
     "confirm": {
       "question": "Please check what we read from your documents",
@@ -231,7 +268,9 @@
       "cityLabel": "City (optional)",
       "cityPlaceholder": "City",
       "zipLabel": "ZIP code (optional)",
-      "zipPlaceholder": "ZIP code"
+      "zipPlaceholder": "ZIP code",
+      "addressLabel": "Street address",
+      "addressPlaceholder": "123 Main Street, Apt 2"
     },
     "household": {
       "question": "Tell us about your household",
@@ -295,6 +334,12 @@
       "saveFailed": "We couldn't save your answers: {message}. If this mentions a missing column, the database migration (supabase/migration_v2.sql) hasn't been applied yet.",
       "profileNotFound": "We couldn't find your profile to save your answers. Please sign out and sign back in, then try again.",
       "profileNotFoundShort": "We could not find your profile to save. Please sign out and sign back in, then try again."
+    },
+    "name": {
+      "question": "What is your full name?",
+      "hint": "Use the name on your immigration papers. This helps us fill out forms for you later.",
+      "label": "Full legal name",
+      "placeholder": "First and last name"
     }
   },
   "processing": {
@@ -331,11 +376,17 @@
       "attorney": "This requires an attorney or accredited representative.",
       "noResults": "No eligible benefits found. Answer more questions or contact a local organization for help.",
       "statusBadges": {
-        "likely_eligible": "Eligible",
+        "likely_eligible": "Likely eligible",
         "not_eligible": "Not eligible"
       },
       "details": "Details",
       "getFormHelp": "Get form help",
+      "applyWithAiTag": "No sign-in",
+      "applyWithAiTitle": "Apply with AI — Iowa SNAP / FIP / Refugee Cash Assistance",
+      "applyWithAiBody": "Iowa's official online application for SNAP (food assistance), FIP (cash assistance), and Refugee Cash Assistance — you can apply as a guest with no account. It asks about everyone in your household, your income, expenses, and immigration status, and lets you upload proof documents. Wayfinder opens the official site and fills in what it can from your saved information; you review every answer, complete anything sensitive yourself, and submit. Because it can affect your immigration case, review it with an attorney or accredited representative before submitting.",
+      "applyWithAiButton": "⚡ Fill out with AI",
+      "applyWithAiDeadline": "Apply anytime",
+      "applyWithAiHow": "Wayfinder opens the official site in a new tab and fills what it can from your saved information. It asks you about anything it doesn't know, leaves sensitive fields, codes, and captchas to you, and stops before submitting so you can review and submit yourself.",
       "daysLeftToApply": "{days} days left to apply",
       "oneDayLeftToApply": "1 day left to apply",
       "deadlinePassedClear": "This deadline has passed",
@@ -348,7 +399,13 @@
       "attorneyWarnTitle": "This form may need a lawyer",
       "attorneyWarnBody": "This is an immigration or legal form, and a mistake can affect your case. You can still fill it out here to prepare, but a licensed attorney or DOJ-accredited representative should review it before you submit anything.",
       "attorneyWarnConfirm": "I understand — continue",
-      "attorneyWarnCancel": "Cancel"
+      "attorneyWarnCancel": "Cancel",
+      "demoBadge": "Recommended demo for judges",
+      "demoNote": "This is a real U.S. government application site — judges can use it as a working demo.",
+      "howItWorks": "How it works",
+      "fillWithAiButton": "Fill out with AI",
+      "verifiedBadge": "Checked against our sources",
+      "flaggedNote": "Some details here couldn't be automatically verified against our records — please confirm them on the official source below."
     },
     "documents": {
       "title": "My Documents",
@@ -371,6 +428,19 @@
         "birth_certificate": "Birth Certificate",
         "status_letter": "Status Letter",
         "other": "Other"
+      },
+      "exampleI94": "Use an example I-94 (for judges)",
+      "exampleI94Hint": "No document handy? Add a sample I-94 to see extraction in action.",
+      "recommendedTitle": "Recommended documents",
+      "recommendedHint": "Add these so Wayfinder can read them once and fill them into your applications. The more you add, the less you retype.",
+      "added": "added",
+      "recommendedItems": {
+        "i94": { "label": "I-94 Arrival/Departure Record", "why": "Confirms your status and date of entry" },
+        "ead": { "label": "Work permit (EAD)", "why": "Your employment authorization card" },
+        "id": { "label": "Photo ID or passport", "why": "Proves your identity and name" },
+        "statusLetter": { "label": "Status or approval letter", "why": "Refugee/asylee/ORR approval (I-797)" },
+        "address": { "label": "Proof of address", "why": "Lease or utility bill — fills your address" },
+        "income": { "label": "Proof of income", "why": "Pay stub or benefit letter — many forms ask for it" }
       }
     },
     "formHelper": {
@@ -433,13 +503,37 @@
       "recheck": "Re-check my benefits",
       "backToDashboard": "Back to dashboard",
       "saved": "Saved",
-      "saving": "Saving..."
+      "saving": "Saving...",
+      "myInfoTitle": "My Information",
+      "myInfoHint": "Saved from your sign-up answers, your documents, and forms you've filled — Wayfinder reuses this so you don't retype it.",
+      "sensitiveNote": "Sensitive numbers (SSN, A-Number, passport, bank) are never stored here.",
+      "myInfoEmpty": "Nothing yet. Add your documents in My Documents (or finish onboarding) and they'll appear here.",
+      "myInfoLabels": {
+        "fullName": "Full name",
+        "firstName": "First name",
+        "lastName": "Last name",
+        "dateOfBirth": "Date of birth",
+        "age": "Age",
+        "countryOfBirth": "Country of birth",
+        "address": "Street address",
+        "city": "City",
+        "state": "State",
+        "zip": "ZIP code",
+        "phone": "Phone",
+        "arrivalDate": "Date of entry",
+        "householdSize": "Household size"
+      }
     },
     "autofill": {
       "title": "Auto-fill",
       "intro": "Auto-fill helps put your saved information into official government websites for you, so you don't have to retype it on every form.",
       "privacy": "Your sensitive numbers — your Social Security Number and A-Number — are never sent. You always enter those yourself.",
       "setUp": "Set up auto-fill",
+      "howToTitle": "How to set it up (one time)",
+      "howToStep1": "Add the Wayfinder extension to your Chrome browser.",
+      "howToStep2": "Click \"Set up auto-fill\" below to get a connection code.",
+      "howToStep3": "Click the Wayfinder icon in your browser toolbar (you may need the puzzle-piece menu), then enter the code to connect.",
+      "howToStep4": "Open your Action Plan and click \"Fill out with AI\" on a program. Wayfinder opens the official website and fills in what it can — you review and submit yourself.",
       "generating": "Getting your code ready...",
       "newCode": "Get a new code",
       "codeInstructions": "Enter this code to connect auto-fill:",
@@ -451,7 +545,36 @@
       "skip": "Skip for now",
       "unavailable": "Auto-fill isn't available yet. Please check back soon — you can still fill out forms by hand in the meantime.",
       "genericError": "We couldn't get your code ready. Please try again.",
-      "networkError": "We couldn't connect. Please check your internet and try again."
+      "networkError": "We couldn't connect. Please check your internet and try again.",
+      "createAccountTitle": "You'll need to create an account to continue",
+      "createAccountBody": "This site requires an account before you can apply. Create one in the site tab that just opened, then come back here and click Resume — Wayfinder will continue where it left off.",
+      "createAccountResume": "I've created my account — resume",
+      "openPortal": "Open the portal",
+      "working": "Working…",
+      "filling": "Filling out your form…",
+      "fillingHint": "Reading the page, deciding what to fill, and entering your information. This can take a moment.",
+      "assistantTitle": "Fill out with AI",
+      "reviewTitle": "Review before you submit",
+      "reviewIntro": "Wayfinder filled what it safely could and stopped before submitting. Check the information below, then continue to the site to review and submit.",
+      "reviewInfoTitle": "Information Wayfinder used",
+      "reviewNoInfo": "No saved information yet.",
+      "reviewConfirm": "I've reviewed all the information above and it is correct.",
+      "attorneyNote": "This application can affect your immigration case. Please have a licensed attorney or accredited representative review it before you submit.",
+      "attorneyConfirm": "An attorney or accredited representative has reviewed this with me.",
+      "proceedToSubmit": "Continue to the site to submit",
+      "neverSubmitNote": "Wayfinder never submits for you — you do the final submit on the official site.",
+      "agent": {
+        "openingPortal": "Opening the benefits portal…",
+        "readingPage": "Reading the current page…",
+        "captcha": "This page has a reCAPTCHA. Please complete it on the site, then click Resume and I'll continue.",
+        "accountWall": "You'll need an account on this site to continue. Create one (or sign in) in the portal tab that just opened, then come back and click Resume — I'll pick up where I left off.",
+        "accountWallStuck": "I can't go further until you have an account here. Create an account or sign in on the portal tab, then click Resume and I'll continue filling the form for you.",
+        "reviewReady": "All filled. Review your information here, then continue to the site to review and submit.",
+        "allDone": "All done. Review your information here, then continue to the site to submit.",
+        "nothingLeft": "Nothing left to fill automatically. Review your information here, then continue to the site to finish.",
+        "resuming": "Thanks — continuing where I left off.",
+        "unreadable": "I couldn't read this page — it may still be loading, or it may have a step only you can do (like a \"verify you're not a robot\" check). I've switched you to the portal tab. Finish anything it's asking for and let it finish loading, then click Continue."
+      }
     },
     "formFill": {
       "title": "Fill out your form",
@@ -470,7 +593,13 @@
       "uploadHint": "Upload your I-94, work permit, or other document in Documents to fill more of this form automatically.",
       "officialFormLoading": "Loading the official form…",
       "statePortalOnly": "This program is applied for through your state's portal — there is no single form to fill. Use the official link to start your application.",
-      "openOfficialSite": "Open the official application site"
+      "openOfficialSite": "Open the official application site",
+      "demoLabel": "Example form — for the judges",
+      "demoDescription": "No upload needed — this is a real IRS Form W-9 you can try right now to watch Wayfinder fill out a real government form.",
+      "tryDemo": "Try it with IRS Form W-9",
+      "aiFilling": "Filling out your form with AI…",
+      "checkboxLabel": "Checkbox",
+      "checkboxHint": "Check this box if it applies to you."
     }
   },
   "errors": {

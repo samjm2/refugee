@@ -44,18 +44,18 @@ function buildRidges(
 }
 
 const HERO_RIDGES = buildRidges(600, 10, [
-  { baseY: 248, amp: [34, 14, 7], freq: [2, 3, 5], phase: [0.4, 1.2, 2.7], fill: "#ECC99E", op: 0.95, dur: 150 },
-  { baseY: 300, amp: [40, 16, 8], freq: [2, 4, 6], phase: [1.4, 0.6, 3.1], fill: "#D2BE97", op: 1, dur: 128 },
-  { baseY: 352, amp: [46, 18, 9], freq: [2, 3, 4], phase: [2.1, 1.9, 0.7], fill: "#A6BC8F", op: 1, dur: 108 },
-  { baseY: 408, amp: [52, 20, 10], freq: [1, 3, 5], phase: [0.9, 2.7, 1.5], fill: "#6E9C76", op: 1, dur: 88 },
-  { baseY: 466, amp: [58, 22, 11], freq: [2, 3, 5], phase: [2.6, 0.3, 2.2], fill: "#467E5A", op: 1, dur: 70 },
-  { baseY: 528, amp: [64, 24, 12], freq: [1, 2, 4], phase: [1.7, 2.1, 0.5], fill: "#2C5E45", op: 1, dur: 54 },
+  { baseY: 248, amp: [34, 14, 7], freq: [2, 3, 5], phase: [0.4, 1.2, 2.7], fill: "#ECC99E", op: 0.95, dur: 98 },
+  { baseY: 300, amp: [40, 16, 8], freq: [2, 4, 6], phase: [1.4, 0.6, 3.1], fill: "#D2BE97", op: 1, dur: 83 },
+  { baseY: 352, amp: [46, 18, 9], freq: [2, 3, 4], phase: [2.1, 1.9, 0.7], fill: "#A6BC8F", op: 1, dur: 70 },
+  { baseY: 408, amp: [52, 20, 10], freq: [1, 3, 5], phase: [0.9, 2.7, 1.5], fill: "#6E9C76", op: 1, dur: 57 },
+  { baseY: 466, amp: [58, 22, 11], freq: [2, 3, 5], phase: [2.6, 0.3, 2.2], fill: "#467E5A", op: 1, dur: 46 },
+  { baseY: 528, amp: [64, 24, 12], freq: [1, 2, 4], phase: [1.7, 2.1, 0.5], fill: "#2C5E45", op: 1, dur: 35 },
 ]);
 
 const FOOT_RIDGES = buildRidges(300, 12, [
-  { baseY: 150, amp: [30, 12], freq: [2, 4], phase: [0.6, 1.8], fill: "#A6BC8F", op: 1, dur: 120 },
-  { baseY: 200, amp: [38, 15], freq: [1, 3], phase: [2.0, 0.9], fill: "#5E9070", op: 1, dur: 96 },
-  { baseY: 252, amp: [44, 18], freq: [2, 3], phase: [1.3, 2.4], fill: "#2C5E45", op: 1, dur: 72 },
+  { baseY: 150, amp: [30, 12], freq: [2, 4], phase: [0.6, 1.8], fill: "#A6BC8F", op: 1, dur: 78 },
+  { baseY: 200, amp: [38, 15], freq: [1, 3], phase: [2.0, 0.9], fill: "#5E9070", op: 1, dur: 62 },
+  { baseY: 252, amp: [44, 18], freq: [2, 3], phase: [1.3, 2.4], fill: "#2C5E45", op: 1, dur: 47 },
 ]);
 
 /* Topographic contour rings for the dark "trust" panel */
@@ -209,12 +209,16 @@ export default function LandingClient({ authed = false }: { authed?: boolean }) 
           <a href="#how" className="hidden text-[15.5px] font-medium text-[#46544B] hover:text-ink md:inline">{t.nav.howItWorks}</a>
           <a href="#features" className="hidden text-[15.5px] font-medium text-[#46544B] hover:text-ink md:inline">{t.nav.features}</a>
           <a href="#languages" className="hidden text-[15.5px] font-medium text-[#46544B] hover:text-ink md:inline">{t.nav.languages}</a>
-          <a href="/auth/login" className="hidden text-[15.5px] font-medium text-[#46544B] hover:text-ink sm:inline">{t.nav.signIn}</a>
+          {authed ? (
+            <a href="/api/auth/signout" className="hidden text-[15.5px] font-medium text-[#46544B] hover:text-ink sm:inline">{t.nav.signOut}</a>
+          ) : (
+            <a href="/auth/login" className="hidden text-[15.5px] font-medium text-[#46544B] hover:text-ink sm:inline">{t.nav.signIn}</a>
+          )}
           <button
             onClick={start}
             className="inline-flex items-center gap-2 rounded-full bg-ink px-5 py-[11px] text-[15px] font-semibold text-[#FBF6EE] transition hover:opacity-90 active:scale-[0.98] focus-visible:outline-none"
           >
-            {t.nav.getStarted}
+            {authed ? t.nav.continue : t.nav.getStarted}
           </button>
         </div>
       </nav>
@@ -445,7 +449,11 @@ export default function LandingClient({ authed = false }: { authed?: boolean }) 
             <a href="#how" className="text-[#9FB0A4] hover:text-[#FBF6EE]">{t.nav.howItWorks}</a>
             <a href="#features" className="text-[#9FB0A4] hover:text-[#FBF6EE]">{t.nav.features}</a>
             <a href="#languages" className="text-[#9FB0A4] hover:text-[#FBF6EE]">{t.nav.languages}</a>
-            <a href="/auth/login" className="text-[#9FB0A4] hover:text-[#FBF6EE]">{t.nav.signIn}</a>
+            {authed ? (
+              <a href="/api/auth/signout" className="text-[#9FB0A4] hover:text-[#FBF6EE]">{t.nav.signOut}</a>
+            ) : (
+              <a href="/auth/login" className="text-[#9FB0A4] hover:text-[#FBF6EE]">{t.nav.signIn}</a>
+            )}
           </div>
           <span className="text-[13px] text-[#62736A]">{t.footer.tagline}</span>
         </div>

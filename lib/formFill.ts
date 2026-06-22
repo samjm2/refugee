@@ -121,10 +121,23 @@ export function mergeDocumentFields(
 // Sensitive-field detection. A field whose NAME matches any of these is never
 // auto-filled, regardless of available data.
 const SENSITIVE_RE =
-  /ssn|social.?security|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank/i;
+  /ssn|social.?security|\bein\b|employer.?id(entification)?(.?number)?|\bitin\b|individual.?taxpayer|taxpayer.?id|\btin\b|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank/i;
 
 export function isSensitiveName(fieldName: string): boolean {
   return SENSITIVE_RE.test(fieldName);
+}
+
+// A STRICTER test for paragraph-sized SURROUNDING text (a field's neighborhood),
+// NOT a short field name/label. The broad tokens above ('account', 'card',
+// 'bank', 'alien') would over-match dense nearby prose ("Medicaid card", "List
+// account number(s)", "Bank of America branch") and wrongly block a real name/
+// address field on an arbitrary form. So a WIDE neighborhood must contain a
+// high-specificity phrase before it may flag a field sensitive.
+const SENSITIVE_CONTEXT_RE =
+  /social.?security|\bssn\b|employer.?identification|\bein\b|individual.?taxpayer|taxpayer.?identification|\bitin\b|\btin\b|alien.?registration|\buscis\b|passport.?(number|no\.?|#)|bank.?account|routing.?(number|no\.?|#)|account.?(number|no\.?|#)/i;
+
+export function isSensitiveContext(text: string): boolean {
+  return SENSITIVE_CONTEXT_RE.test(text);
 }
 
 // Map a single PDF field name to a profile value. Returns the value to fill, or
@@ -143,6 +156,13 @@ export function valueForField(
   if (/(date.?of.?birth|birth.?date|\bdob\b)/.test(n)) return values.dateOfBirth;
   if (/(street|home.?address|mailing.?address|\baddress\b|address.?line)/.test(n))
     return values.address;
+  // Combined "City, state, and ZIP code" single field → fill all three together
+  // (e.g. "Buffalo Grove, IL 60089"), so the W-9's line 6 isn't left half-empty.
+  if (/city/.test(n) && /(state|province|zip|postal)/.test(n)) {
+    const region = [values.state, values.zip].filter(Boolean).join(" ");
+    const parts = [values.city, region].filter(Boolean);
+    return parts.length ? parts.join(", ") : undefined;
+  }
   if (/\bcity\b|town/.test(n)) return values.city;
   if (/\bstate\b|province/.test(n)) return values.state;
   if (/\bzip\b|postal|zip.?code/.test(n)) return values.zip;
@@ -163,8 +183,13 @@ export function valueForField(
 export function resolveField(
   fieldName: string,
   values: ProfileValues,
+  ...extraLabels: (string | undefined)[]
 ): { flag: FieldFlag; value: string } {
-  if (isSensitiveName(fieldName)) {
+  // Sensitivity is decided from the field name OR any human label / nearby
+  // context we detected. A W-9 SSN box has a cryptic AcroForm name ("f1_11")
+  // but a visible "Social security number" heading — that MUST flag it
+  // sensitive, so we test every candidate string we were given.
+  if ([fieldName, ...extraLabels].some((c) => c && isSensitiveName(c))) {
     return { flag: "sensitive", value: "" };
   }
   const v = valueForField(fieldName, values);

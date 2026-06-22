@@ -51,6 +51,21 @@ export default function AutofillSetup() {
   return (
     <div>
       <p className="mt-1 text-base text-text-muted">{af.intro}</p>
+
+      {/* One-time setup steps — shown so a first-time user (or a judge demoing)
+          knows exactly how to install the extension and fill a form. */}
+      <ol className="mt-4 space-y-2 rounded-[--radius-md] border border-border bg-canvas/60 p-4">
+        <li className="text-sm font-semibold text-text">{af.howToTitle}</li>
+        {[af.howToStep1, af.howToStep2, af.howToStep3, af.howToStep4].map((step, i) => (
+          <li key={i} className="flex gap-3 text-sm text-text-muted">
+            <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-harbor-100 text-xs font-bold text-harbor-700">
+              {i + 1}
+            </span>
+            <span>{step}</span>
+          </li>
+        ))}
+      </ol>
+
       <div className="mt-3 flex items-start gap-2 rounded-[--radius-md] bg-harbor-50 px-4 py-3 text-sm text-harbor-800 ring-1 ring-harbor-100">
         <svg
           aria-hidden="true"

@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Logo from "@/components/Logo";
 import { createClient } from "@/lib/supabase/client";
+import { setSavedInfo } from "@/lib/savedInfo";
+import { loadExampleI94File } from "@/lib/exampleI94";
 import LanguagePicker from "@/components/LanguagePicker";
 import AutofillSetup from "@/components/AutofillSetup";
 import { useTranslation } from "@/components/i18n/TranslationProvider";
@@ -46,6 +48,9 @@ type Confidence = "high" | "medium" | "low";
 
 interface FormData {
   language_code: string;
+  // Identity (manual path only — not stored on the profiles table; persisted to
+  // the client-side savedInfo store so they're reusable across the app)
+  full_name: string;
   // Immigration / Identity
   immigration_status: ImmigrationStatus | "";
   has_i94: boolean | null;
@@ -57,6 +62,7 @@ interface FormData {
   arrival_date: string;
   status_grant_date: string;
   // Location
+  street_address: string;
   state: string;
   city: string;
   zip_code: string;
@@ -99,6 +105,7 @@ type StepId =
   | "scan"
   | "confirm"
   | "status"
+  | "name"
   | "documents"
   | "orr_letter"
   | "eligibility_date"
@@ -125,8 +132,9 @@ function getSteps(form: FormData, scanUsed: boolean | null): StepId[] {
     return steps;
   }
 
-  // Manual path (also used while the user hasn't chosen yet).
-  const steps: StepId[] = ["language", "scan", "status", "documents"];
+  // Manual path (also used while the user hasn't chosen yet). No I-94 was
+  // scanned, so we ask for the name directly (the scan path extracts it instead).
+  const steps: StepId[] = ["language", "scan", "status", "documents", "name"];
   if (status === "trafficking_victim") steps.push("orr_letter");
   if (status && ORR_STATUSES.includes(status)) steps.push("eligibility_date");
   if (status && status !== "us_citizen") steps.push("arrival_date");
@@ -167,10 +175,15 @@ export default function OnboardingForm() {
   const [detected, setDetected] = useState<string[]>([]);
   const [docMeta, setDocMeta] = useState<DocMeta>({ full_name: "", country_of_origin: "", date_of_birth: "" });
   const [conf, setConf] = useState<ConfMap>({});
+  // True only when an age was populated from an uploaded/extracted document.
+  // Drives whether the household step shows the read-only "from document"
+  // confirmation instead of an editable age input. Manual typing never sets this.
+  const [ageFromDoc, setAgeFromDoc] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [form, setForm] = useState<FormData>({
     language_code: initialLang,
+    full_name: "",
     immigration_status: "",
     has_i94: null,
     has_ead: null,
@@ -179,6 +192,7 @@ export default function OnboardingForm() {
     eligibility_date: "",
     arrival_date: "",
     status_grant_date: "",
+    street_address: "",
     state: "",
     city: "",
     zip_code: "",
@@ -292,13 +306,19 @@ export default function OnboardingForm() {
     // Age is only as trustworthy as the birth date it came from.
     const age = dob ? ageFromDob(dob) : "";
 
+    // An age was genuinely read from the document only when the birth date (or a
+    // direct age field) produced a value. This — not manual typing — is what
+    // lets the household step show the read-only "from document" confirmation.
+    const docAge = age || num("age");
+    if (docAge) setAgeFromDoc(true);
+
     setForm((prev) => ({
       ...prev,
       immigration_status: (status || prev.immigration_status) as ImmigrationStatus | "",
       arrival_date: arrival || prev.arrival_date,
       eligibility_date: eligibility || prev.eligibility_date,
       status_grant_date: grant || prev.status_grant_date,
-      age: age || num("age") || prev.age,
+      age: docAge || prev.age,
       has_i94: b.has_i94 ? true : prev.has_i94,
       has_ead: b.has_ead ? true : prev.has_ead,
     }));
@@ -323,13 +343,17 @@ export default function OnboardingForm() {
     setDetected(data.documents_detected ?? []);
   }
 
-  async function runExtract() {
-    if (files.length === 0) return;
+  // Shared extraction path: POST the given files to the reader, apply the
+  // result, mark the scan as used, and jump to the confirm screen. Both the
+  // normal "Read my documents" button and the example-I-94 button funnel through
+  // here so the example behaves exactly like a real upload.
+  async function extractFiles(filesToExtract: File[]) {
+    if (filesToExtract.length === 0) return;
     setExtracting(true);
     setExtractError("");
     try {
       const fd = new globalThis.FormData();
-      files.forEach((f) => fd.append("files", f));
+      filesToExtract.forEach((f) => fd.append("files", f));
       const res = await fetch("/api/onboarding/extract", { method: "POST", body: fd });
       const data = await res.json();
       if (!res.ok || !data.ok) {
@@ -347,8 +371,32 @@ export default function OnboardingForm() {
     }
   }
 
+  function runExtract() {
+    void extractFiles(files);
+  }
+
+  // Demo affordance: load the bundled example I-94 and run it through the exact
+  // same extraction path as a real upload (sets scanUsed, extracts, confirms).
+  async function runExtractExample() {
+    setExtractError("");
+    setExtracting(true);
+    let example: File;
+    try {
+      example = await loadExampleI94File();
+    } catch {
+      setExtractError(ob.scan.errorReadFailed);
+      setExtracting(false);
+      return;
+    }
+    setFiles([example]);
+    await extractFiles([example]);
+  }
+
   function skipScan() {
     setScanUsed(false);
+    // Abandon any doc-derived age so the manual path always shows an editable
+    // age input (the "from your document" message must never strand the user).
+    setAgeFromDoc(false);
     setStepIndex(2); // -> "status" (index 2 in the manual layout)
   }
 
@@ -393,6 +441,7 @@ export default function OnboardingForm() {
       case "scan": return true; // its own buttons drive navigation
       case "confirm": return !!form.immigration_status;
       case "status": return !!form.immigration_status;
+      case "name": return true; // convenience field — don't hard-block if empty
       case "documents": return form.has_ssn !== null;
       case "orr_letter": return form.has_orr_eligibility_letter !== null;
       case "eligibility_date": return !!form.eligibility_date;
@@ -473,6 +522,22 @@ export default function OnboardingForm() {
       return;
     }
 
+    // Persist the non-sensitive, reusable identity facts to the client-side store
+    // so the rest of the app (form autofill, "My Information", etc.) can reuse
+    // them without asking again. These have no columns on the profiles table, so
+    // they are intentionally NOT part of the update above. setSavedInfo drops
+    // empties and any sensitive keys defensively.
+    setSavedInfo({
+      fullName: form.full_name || docMeta.full_name,
+      address: form.street_address,
+      city: form.city,
+      state: form.state,
+      zip: form.zip_code,
+      age: form.age,
+      dateOfBirth: docMeta.date_of_birth,
+      countryOfOrigin: docMeta.country_of_origin,
+    });
+
     router.push("/processing");
   }
 
@@ -490,7 +555,11 @@ export default function OnboardingForm() {
     "w-full rounded-[--radius-md] border-2 border-border bg-surface px-4 py-4 text-lg text-text transition focus:border-harbor-400 focus:outline-none focus-visible:shadow-focus";
 
   const showNestedChildren = (parseInt(form.num_children_under_19 || "0", 10) || 0) > 0;
-  const askAge = !form.age; // hidden once a DOB-derived age is present
+  // Show the editable age input whenever the age did NOT come from a document.
+  // (Manual typing must never flip this to the read-only "from document" message,
+  // and multi-digit ages must work — so we key off the explicit doc flag, not the
+  // typed value.) The read-only confirmation shows only when ageFromDoc is true.
+  const askAge = !ageFromDoc;
   // Show the unaccompanied-minor question only when age is unknown or < 18.
   // If we already know the user is 18+, auto-set false and skip the question.
   const knownAge = form.age ? Number(form.age) : NaN;
@@ -499,8 +568,13 @@ export default function OnboardingForm() {
   const isConfirm = currentStep === "confirm";
 
   function setDob(v: string) {
+    const derivedAge = ageFromDob(v);
     setDocMeta((m) => ({ ...m, date_of_birth: v }));
-    set("age", ageFromDob(v));
+    set("age", derivedAge);
+    // A DOB entered on the confirm screen (document path) yields a document-derived
+    // age, so the household step should show the read-only confirmation. Clearing
+    // the DOB clears that flag so the editable input returns.
+    setAgeFromDoc(!!derivedAge);
     markConfirmed("date_of_birth");
     markConfirmed("age");
   }
@@ -633,6 +707,17 @@ export default function OnboardingForm() {
                 >
                   {ob.scan.skip}
                 </button>
+                <div className="mt-1 flex flex-col items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={runExtractExample}
+                    disabled={extracting}
+                    className="inline-flex items-center justify-center gap-2 rounded-[--radius-md] border border-border bg-surface px-4 py-2 text-sm font-medium text-text-muted transition hover:border-harbor-300 hover:text-text focus-visible:outline-none disabled:opacity-40"
+                  >
+                    {extracting ? ob.scan.reading : ob.scan.exampleI94}
+                  </button>
+                  <p className="text-center text-xs text-text-faint">{ob.scan.exampleI94Hint}</p>
+                </div>
                 {stepIndex > 0 && (
                   <button
                     type="button"
@@ -811,6 +896,26 @@ export default function OnboardingForm() {
             </Step>
           )}
 
+          {/* ── NAME (manual path only — no I-94 was scanned to extract it) ── */}
+          {currentStep === "name" && (
+            <Step icon="name" question={ob.name.question}>
+              <p className="mt-1 mb-6 text-lg text-text-muted">{ob.name.hint}</p>
+              <div>
+                <label htmlFor="ob-full-name" className="mb-1.5 block text-sm font-semibold text-text-muted">{ob.name.label}</label>
+                <input
+                  id="ob-full-name"
+                  autoFocus
+                  type="text"
+                  autoComplete="name"
+                  value={form.full_name}
+                  onChange={(e) => set("full_name", e.target.value)}
+                  placeholder={ob.name.placeholder}
+                  className="w-full rounded-[--radius-md] border-2 border-border bg-surface px-4 py-4 text-lg text-text placeholder-text-faint transition focus:border-harbor-400 focus:outline-none focus-visible:shadow-focus"
+                />
+              </div>
+            </Step>
+          )}
+
           {/* ── DOCUMENTS (SSN always; I-94/EAD only when not from a scan) ── */}
           {currentStep === "documents" && (
             <Step icon="documents" question={ob.documents.question}>
@@ -953,6 +1058,18 @@ export default function OnboardingForm() {
                     <option value="">{ob.location.selectState}</option>
                     {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
+                </div>
+                <div>
+                  <label htmlFor="ob-address" className="mb-1.5 block text-sm font-semibold text-text-muted">{ob.location.addressLabel}</label>
+                  <input
+                    id="ob-address"
+                    type="text"
+                    autoComplete="street-address"
+                    value={form.street_address}
+                    onChange={(e) => set("street_address", e.target.value)}
+                    placeholder={ob.location.addressPlaceholder}
+                    className="w-full rounded-[--radius-md] border-2 border-border bg-surface px-4 py-4 text-lg text-text placeholder-text-faint transition focus:border-harbor-400 focus:outline-none focus-visible:shadow-focus"
+                  />
                 </div>
                 <div>
                   <label htmlFor="ob-city" className="mb-1.5 block text-sm font-semibold text-text-muted">{ob.location.cityLabel}</label>
@@ -1198,7 +1315,7 @@ export default function OnboardingForm() {
                 type="button"
                 onClick={handleFinish}
                 disabled={saving}
-                className="mt-6 inline-flex items-center justify-center gap-2 rounded-[--radius-md] px-4 py-2.5 text-base font-semibold text-text-muted transition hover:bg-sand-100 hover:text-text focus-visible:outline-none disabled:opacity-40"
+                className="mt-6 inline-flex items-center justify-center gap-2 rounded-[--radius-md] border border-border px-4 py-2.5 text-base font-semibold text-text-muted transition hover:bg-sand-100 hover:text-text focus-visible:outline-none disabled:opacity-40"
               >
                 {ob_af.maybeLater}
               </button>
@@ -1259,6 +1376,7 @@ type StepIconKey =
   | "scan"
   | "confirm"
   | "status"
+  | "name"
   | "documents"
   | "orr_letter"
   | "eligibility_date"
@@ -1298,6 +1416,12 @@ const STEP_ICONS: Record<StepIconKey, React.ReactNode> = {
       <path d="M14 2v6h6" />
       <path d="M16 13H8" />
       <path d="M16 17H8" />
+    </>
+  ),
+  name: (
+    <>
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
     </>
   ),
   documents: (

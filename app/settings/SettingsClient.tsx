@@ -1,28 +1,23 @@
 "use client";
 
-// Settings client. Two areas:
-//  1) LANGUAGE — wired to the provider's setLanguage so the whole app updates
-//     LIVE (no reload). After a successful change we also POST /api/eligibility
-//     (re-run the deterministic engine so the AI summary/steps come back in the
-//     new language) and router.refresh() so the dashboard's server-rendered
-//     result picks up the new row.
-//  2) EDIT MY INFORMATION — the onboarding intake fields, pre-filled from the
-//     current profile. On Save we update `profiles`, then route to /processing
-//     which re-runs /api/eligibility (the deterministic engine) and lands on the
-//     dashboard. We do NOT reimplement eligibility here.
+// Settings client. One area:
+//  EDIT MY INFORMATION — the onboarding intake fields, pre-filled from the
+//  current profile. On Save we update `profiles`, then route to /processing
+//  which re-runs /api/eligibility (the deterministic engine) and lands on the
+//  dashboard. We do NOT reimplement eligibility here.
 //
 // Sensitive numbers (SSN, A-Number, etc.) are never collected — we only ask
 // yes/no about whether the user has an SSN, exactly as onboarding does.
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
-import LanguagePicker from "@/components/LanguagePicker";
 import AutofillSetup from "@/components/AutofillSetup";
 import { createClient } from "@/lib/supabase/client";
 import { useTranslation } from "@/components/i18n/TranslationProvider";
 import type { ImmigrationStatus, Profile, Document } from "@/lib/types";
 import { profileToValues, mergeDocumentFields, type ProfileValues } from "@/lib/formFill";
+import { getSavedInfo, overlayValues, type SavedInfo } from "@/lib/savedInfo";
 
 const US_STATES = [
   "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA",
@@ -119,20 +114,11 @@ function profileToForm(p: Profile): FormData {
 // What Wayfinder has learned about the user, merged the same way the autofill
 // agent merges it: saved profile first, then each uploaded document (newest
 // first). Sensitive numbers are never part of this.
-const MEMORY_LABELS: { key: keyof ProfileValues; label: string }[] = [
-  { key: "fullName", label: "Full name" },
-  { key: "firstName", label: "First name" },
-  { key: "lastName", label: "Last name" },
-  { key: "dateOfBirth", label: "Date of birth" },
-  { key: "age", label: "Age" },
-  { key: "countryOfBirth", label: "Country of birth" },
-  { key: "address", label: "Street address" },
-  { key: "city", label: "City" },
-  { key: "state", label: "State" },
-  { key: "zip", label: "ZIP code" },
-  { key: "phone", label: "Phone" },
-  { key: "arrivalDate", label: "Date of entry" },
-  { key: "householdSize", label: "Household size" },
+// Order of fields shown in "My Information". Labels come from i18n
+// (dashboard.settings.myInfoLabels.<key>) so they translate with the app.
+const MEMORY_KEYS: (keyof ProfileValues)[] = [
+  "fullName", "firstName", "lastName", "dateOfBirth", "age", "countryOfBirth",
+  "address", "city", "state", "zip", "phone", "arrivalDate", "householdSize",
 ];
 
 export default function SettingsClient({
@@ -145,20 +131,35 @@ export default function SettingsClient({
   embedded?: boolean;
 }) {
   const router = useRouter();
-  const { t, lang, translating, setLanguage } = useTranslation();
+  const { t } = useTranslation();
   const ob = t.onboarding;
 
-  // Merge profile + all documents (newest first) into the "memory" the autofill
-  // agent uses, so the user can see and verify it.
+  // Saved info lives in localStorage, so it can only be read after mount (reading
+  // during render would cause an SSR hydration mismatch). We hold it in state and
+  // refresh it whenever it changes — e.g. after a document is extracted or a form
+  // is filled elsewhere in the app — so "My Information" stays live.
+  const [savedInfo, setSavedInfoState] = useState<SavedInfo>({});
+  useEffect(() => {
+    const refresh = () => setSavedInfoState(getSavedInfo());
+    refresh();
+    window.addEventListener("wayfinder:saved-info-changed", refresh);
+    return () => window.removeEventListener("wayfinder:saved-info-changed", refresh);
+  }, []);
+
+  // Build "My Information": the profile + every uploaded document (newest first),
+  // the same way the autofill agent merges it, then overlay the user's saved info
+  // (sign-up answers and form entries) as the final, gap-filling layer. This is
+  // exactly what gets reused to fill applications, shown so the user can verify it.
   const memory = (() => {
     let v = profileToValues(profile);
     for (const d of documents ?? []) {
       v = mergeDocumentFields(v, d.extracted_fields as Record<string, string> | null | undefined);
     }
-    return v;
+    return overlayValues(v, savedInfo);
   })();
-  const memoryEntries = MEMORY_LABELS
-    .map(({ key, label }) => ({ label, value: memory[key] }))
+  const infoLabels = t.dashboard.settings.myInfoLabels as Record<string, string>;
+  const memoryEntries = MEMORY_KEYS
+    .map((key) => ({ label: infoLabels[key] ?? key, value: memory[key] }))
     .filter((e): e is { label: string; value: string } => !!e.value);
 
   function statusOptionText(value: ImmigrationStatus): string {
@@ -166,16 +167,6 @@ export default function SettingsClient({
     if (!opt) return value;
     const note = "note" in opt ? (opt as { note?: string }).note : undefined;
     return note ? `${opt.label} — ${note}` : opt.label;
-  }
-
-  // ── Language area ──
-
-  async function onChangeLanguage(code: string) {
-    if (code === lang) return;
-    // Switch the UI live (fetches /api/translate for non-English, updates html
-    // lang/dir, persists to profile + localStorage). No API eligibility call.
-    await setLanguage(code);
-    router.refresh();
   }
 
   // ── Edit-info area ──
@@ -287,11 +278,12 @@ export default function SettingsClient({
         <h1 className="font-display text-3xl font-semibold text-text">{t.dashboard.settings.title}</h1>
         <p className="mt-2 text-lg text-text-muted">{t.dashboard.settings.subtitle}</p>
 
-        {/* ── WHAT WAYFINDER KNOWS (the agent's memory) ── */}
+        {/* ── MY INFORMATION (the agent's memory) ── */}
         <section className="mt-8 rounded-[--radius-md] border border-border bg-surface p-5 shadow-sm md:p-6">
-          <h2 className="text-xl font-semibold text-text">What Wayfinder knows about you</h2>
-          <p className="mt-1 text-base text-text-muted">
-            This is the information the AI uses to fill forms — combined from your answers and the documents you uploaded. Sensitive numbers (SSN, A-Number, passport, bank) are never stored here.
+          <h2 className="text-xl font-semibold text-text">{t.dashboard.settings.myInfoTitle}</h2>
+          <p className="mt-1 text-base text-text-muted">{t.dashboard.settings.myInfoHint}</p>
+          <p className="mt-1 text-sm text-text-faint">
+            {t.dashboard.settings.sensitiveNote}
           </p>
           {memoryEntries.length > 0 ? (
             <dl className="mt-4 grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
@@ -304,24 +296,7 @@ export default function SettingsClient({
             </dl>
           ) : (
             <p className="mt-4 rounded-[--radius-md] bg-surface-2 px-4 py-3 text-sm text-text-muted">
-              Nothing yet. Add your documents in <strong>My Documents</strong> (or finish onboarding) and they&apos;ll appear here.
-            </p>
-          )}
-        </section>
-
-        {/* ── LANGUAGE ── */}
-        <section className="mt-8 rounded-[--radius-md] border border-border bg-surface p-5 shadow-sm md:p-6">
-          <h2 className="text-xl font-semibold text-text">{t.dashboard.settings.language}</h2>
-          <p className="mt-1 mb-4 text-base text-text-muted">{t.dashboard.settings.languageHint}</p>
-          <LanguagePicker value={lang} onChange={onChangeLanguage} label="" />
-          {translating && (
-            <p className="mt-3 flex items-center gap-2 text-sm text-text-muted" aria-live="polite">
-              <span aria-hidden="true">
-                <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                </svg>
-              </span>
-              {t.dashboard.settings.saving}
+              {t.dashboard.settings.myInfoEmpty}
             </p>
           )}
         </section>

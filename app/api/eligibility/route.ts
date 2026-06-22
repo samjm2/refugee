@@ -3,9 +3,10 @@ import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { getClaudeClient, HAIKU } from "@/lib/claude";
 import { readFileSync } from "fs";
 import { join } from "path";
-import type { BenefitRecord, EligibilityBenefit, Profile } from "@/lib/types";
+import type { BenefitRecord, BenefitVerification, EligibilityBenefit, Profile } from "@/lib/types";
 import { computeDerived, type FPLTable } from "@/lib/eligibility/derive";
 import { evaluateAll } from "@/lib/eligibility/engine";
+import { verifyNarratives, type VerificationOutcome } from "@/lib/eligibility/verifyResult";
 
 // ── Load static data files ────────────────────────────────────────────────────
 
@@ -77,6 +78,9 @@ function extractJson(text: string): unknown | null {
 
 interface Narratives {
   summary: string;
+  // The deterministic, source-derived fallback summary — used as the VERIFIED
+  // replacement if the verification pass can't confirm the generated summary.
+  templateSummary: string;
   perBenefit: Record<string, { whyPlainLanguage: string; nextSteps: string[] }>;
 }
 
@@ -106,7 +110,7 @@ async function generateNarratives(
   }
 
   if (relevant.length === 0) {
-    return { summary: templateSummary, perBenefit };
+    return { summary: templateSummary, templateSummary, perBenefit };
   }
 
   try {
@@ -145,7 +149,7 @@ ${JSON.stringify(compact)}`,
       | null;
 
     if (!parsed) {
-      return { summary: templateSummary, perBenefit };
+      return { summary: templateSummary, templateSummary, perBenefit };
     }
 
     const summary =
@@ -168,10 +172,10 @@ ${JSON.stringify(compact)}`,
       }
     }
 
-    return { summary, perBenefit };
+    return { summary, templateSummary, perBenefit };
   } catch {
     // Claude outage / error -> English templates. Never empty.
-    return { summary: templateSummary, perBenefit };
+    return { summary: templateSummary, templateSummary, perBenefit };
   }
 }
 
@@ -208,6 +212,7 @@ export async function POST() {
   // ── Claude: narrative text ONLY (robust, fallback-safe) ──
   const claude = getClaudeClient();
   let summary = "";
+  let templateSummary = "";
   let narratedBenefits = baseBenefits;
   try {
     const narratives = await generateNarratives(
@@ -218,6 +223,7 @@ export async function POST() {
       attorneyNeeded
     );
     summary = narratives.summary;
+    templateSummary = narratives.templateSummary;
     narratedBenefits = baseBenefits.map((b) => {
       const n = narratives.perBenefit[b.id];
       if (!n) return b;
@@ -233,6 +239,89 @@ export async function POST() {
       .slice(0, 8)
       .join(", ");
     summary = names ? `You may qualify for: ${names}.` : "";
+    templateSummary = summary;
+  }
+
+  // ── Independent verification pass ────────────────────────────────────────────
+  // A SEPARATE Claude call audits the generated why/steps/summary against the
+  // curated source records (database/benefits.json). It does NOT re-decide
+  // eligibility — only faithfulness. Anything it can't verify is dropped (replaced
+  // with the verified source template) or flagged before display; if the verifier
+  // itself fails we fail safe by treating everything as unverified.
+  const flaggedForHuman: { id: string; reason: string }[] = [];
+  {
+    const relevant = narratedBenefits.filter((b) => b.status !== "not_eligible");
+    let verification: VerificationOutcome | null = null;
+    try {
+      verification = await verifyNarratives(claude, relevant, benefits, summary);
+    } catch {
+      verification = null;
+    }
+
+    const byBase = new Map(baseBenefits.map((b) => [b.id, b]));
+    narratedBenefits = narratedBenefits.map((b) => {
+      if (b.status === "not_eligible") return b;
+      const base = byBase.get(b.id);
+      const v = verification?.ok ? verification.perBenefit[b.id] : undefined;
+
+      // Verifier failed or said nothing about this program → fail safe: show only
+      // the verified source template, flagged for review.
+      if (!v) {
+        const failVerification: BenefitVerification = {
+          status: "flagged",
+          claims: [
+            {
+              field: "why",
+              text: b.whyPlainLanguage,
+              verdict: "unverifiable",
+              reason: "Verification could not be completed.",
+            },
+          ],
+        };
+        return {
+          ...b,
+          whyPlainLanguage: base?.whyPlainLanguage ?? b.whyPlainLanguage,
+          nextSteps: base?.nextSteps ?? b.nextSteps,
+          verification: failVerification,
+        };
+      }
+
+      // Show the generated "why" only if it verified; otherwise revert to the
+      // verified source template (never display an unverified description).
+      const whyClaim = v.claims.find((c) => c.field === "why");
+      const whyPlainLanguage =
+        whyClaim?.verdict === "verified"
+          ? b.whyPlainLanguage
+          : base?.whyPlainLanguage ?? b.whyPlainLanguage;
+
+      // Keep only verified steps; if none survive, revert to the source template.
+      const keptSteps = b.nextSteps.filter((_, i) => {
+        const c = v.claims.find((cl) => cl.field === "step" && cl.index === i);
+        return c?.verdict === "verified";
+      });
+      const nextSteps = keptSteps.length ? keptSteps : base?.nextSteps ?? b.nextSteps;
+
+      return { ...b, whyPlainLanguage, nextSteps, verification: v };
+    });
+
+    // Summary: keep the generated one only if it verified; else the safe template.
+    if (!verification?.ok || verification.summaryStatus !== "verified") {
+      summary = templateSummary || summary;
+    }
+
+    // Queue every flagged program for human review.
+    for (const b of narratedBenefits) {
+      if (b.status !== "not_eligible" && b.verification?.status === "flagged") {
+        const reason = b.verification.claims
+          .filter((c) => c.verdict !== "verified")
+          .map((c) => `${c.field}${c.index != null ? ` #${c.index + 1}` : ""}: ${c.reason || c.verdict}`)
+          .join("; ");
+        flaggedForHuman.push({
+          id: b.id,
+          reason: reason || "Some details could not be verified against the source record.",
+        });
+      }
+    }
   }
 
   // ── Rank: soonest deadline first (nulls last), then status ──
@@ -247,8 +336,6 @@ export async function POST() {
     if (b.deadline.daysLeft !== null) return 1;
     return (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9);
   });
-
-  const flaggedForHuman: { id: string; reason: string }[] = [];
 
   // ── Last verified date from benefits database ──
   const allDates = benefits

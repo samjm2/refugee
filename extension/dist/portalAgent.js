@@ -1,7 +1,7 @@
 "use strict";
 (() => {
   // src/portalAgent.ts
-  var SENSITIVE_RE = /ssn|social.?security|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank|password|security.?question|signature|certif|attest|under penalty/i;
+  var SENSITIVE_RE = /ssn|social.?security|\bein\b|employer.?id(entification)?(.?number)?|\bitin\b|individual.?taxpayer|taxpayer.?id|\btin\b|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank|password|security.?question|verification.?code|security.?code|one.?time.?(code|password|passcode)|\botp\b|confirmation.?code|captcha|not a robot|signature|certif|attest|under penalty|penalty of perjury|\bconsent\b|i agree|agree to (allow|the)|authoriz|allow my information/i;
   var FINAL_SUBMIT_RE = /\b(submit|file|finish|complete|confirm|sign|certify|agree|pay|place order|send application)\b/i;
   var NEXT_RE = /\b(next|continue|save (and|&) continue|proceed|go on|forward|start)\b/i;
   var refCounter = 0;
@@ -120,6 +120,9 @@
     const headings = Array.from(document.querySelectorAll("h1, h2, legend")).map((h) => textOf(h)).filter(Boolean).slice(0, 12);
     const bodyText = (document.body.innerText || "").slice(0, 4e3);
     const stepMatch = bodyText.match(/step\s+\d+\s+of\s+\d+/i) || bodyText.match(/page\s+\d+\s+of\s+\d+/i);
+    const captcha = !!document.querySelector(
+      'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, [data-sitekey], .h-captcha, #g-recaptcha-response'
+    ) || /\b(re ?captcha|hcaptcha|not a robot|verify you are (not )?human|i'?m not a robot)\b/i.test(bodyText);
     return {
       url: location.href,
       title: document.title,
@@ -127,7 +130,8 @@
       fields,
       buttons,
       errors,
-      step: stepMatch ? stepMatch[0] : void 0
+      step: stepMatch ? stepMatch[0] : void 0,
+      captcha
     };
   }
   function setNativeValue(el, value) {

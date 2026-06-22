@@ -79,7 +79,15 @@ export const EXTRACT_PROMPT = `You are a careful, privacy-preserving document re
 
 For EACH image, first classify the document as one of: i94, ead (Employment Authorization Document / Form I-766 work permit), green_card (Form I-551 permanent resident card), asylum_letter (asylum approval / I-797 approval notice / immigration judge grant), ssn_card (Social Security card), other.
 
-Then extract ONLY the fields listed below, across all documents combined.
+Then extract ONLY the fields listed below, across all documents combined. Read what is ACTUALLY printed on the document — transcribe characters exactly, do not normalize names, and never invent or "fill in" a value you cannot clearly see. If a field is missing, blurry, or absent on the document, OMIT it rather than guessing.
+
+A CBP I-94 (Arrival/Departure Record) is the most common document here. On it, read these labeled areas precisely:
+- "Family Name" (surname) and "First (Given) Name" — combine them into full_name as "First Last" (Given name first, then Family name).
+- "Birth Date" — the person's date of birth.
+- "Admission (I-94) Record Number" — this is a record number, NOT a date and NOT an A-Number; do NOT output it (it is not one of the requested fields).
+- "Class of Admission" — the short letter/number code (e.g. "RE", "AS", "SI", "U4U") that determines immigration_status (see mapping below).
+- "Country of Citizenship" / "Country of Issuance" — use for country_of_origin.
+- "Most Recent Date of Entry" / "Date of Entry" — use for arrival_date.
 
 NEVER output, transcribe, or guess any of these (they are sensitive and not needed): Social Security Number, A-Number / Alien Registration Number, USCIS number, passport number, bank/financial numbers. If a Social Security card is uploaded, classify it as ssn_card and extract NOTHING from it.
 
@@ -91,7 +99,7 @@ CRITICAL — keep dates in their correct field. These are DIFFERENT dates and mu
 If a value is only legible as one of these, fill that one field and leave the others out. Never copy the entry date into date_of_birth or vice-versa. If you are unsure which date a value is, mark it "low" confidence.
 
 Fields to extract (omit any you cannot read):
-- immigration_status: map the document to EXACTLY one of these codes:
+- immigration_status: map the document to EXACTLY one of these codes, driven primarily by the "Class of Admission" code on an I-94, the category code on an EAD/green card, or the explicit grant on a letter. Only assign a status when the document's evidence clearly supports it; otherwise use other_none. Map by the code you actually saw:
     refugee_207  (I-94 class of admission RE / R8 / "Visa 93" / "Refugee"; EAD category A03; green card category RE-6/RE-7)
     asylee_208   (asylum granted / I-94 "AS"; EAD category A05; green card AS-6/AS-7; asylum approval letter)
     siv          (Special Immigrant Visa; I-94 "SI"/"SQ"/"IV")
@@ -112,7 +120,7 @@ Fields to extract (omit any you cannot read):
 - full_name (display only)
 - country_of_origin (display only)
 
-Give each extracted field a confidence: "high" (clearly printed and unambiguous), "medium" (legible but inferred/partial), or "low" (blurry, partly obscured, or guessed).
+Give EVERY extracted field its own confidence: "high" (clearly printed and unambiguous on the document), "medium" (legible but inferred, partial, or reconstructed), or "low" (blurry, partly obscured, ambiguous, or guessed). Be honest — if you had to guess any part of a value, it is "low". Do not mark a value "high" unless you can read every character of it cleanly.
 
 Return ONLY a JSON object, no prose, in EXACTLY this shape (omit fields you cannot read; never include fields not listed):
 {

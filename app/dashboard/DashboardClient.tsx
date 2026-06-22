@@ -4,11 +4,10 @@ import { Suspense, useCallback, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import Logo from "@/components/Logo";
 import { useTranslation } from "@/components/i18n/TranslationProvider";
-import type { Profile, EligibilityBenefit, BenefitProgress, Document } from "@/lib/types";
+import type { Profile, EligibilityBenefit, Document } from "@/lib/types";
 import ActionPlan from "./tabs/ActionPlan";
 import DocumentsVault from "./tabs/DocumentsVault";
 import FindHelp from "./tabs/FindHelp";
-import ProgressTracker from "./tabs/ProgressTracker";
 import SettingsClient from "../settings/SettingsClient";
 import FormFillClient from "../form/FormFillClient";
 
@@ -23,7 +22,6 @@ interface Props {
     flagged_for_human: { id: string; reason: string }[];
     language: string;
   } | null;
-  progressRows: BenefitProgress[];
   documents: Document[];
   // Presentation-only "where & how to apply" + form info, keyed by benefit id.
   // Threaded through to the Action Plan.
@@ -38,7 +36,6 @@ const TABS = [
   { id: "documents", labelKey: "documents" },
   { id: "form", labelKey: "formHelper" },
   { id: "help", labelKey: "findHelp" },
-  { id: "progress", labelKey: "progress" },
 ] as const;
 
 type TabId = typeof TABS[number]["id"];
@@ -73,12 +70,6 @@ const ICONS: Record<ViewId | "signout", React.ReactNode> = {
       <line x1="14.83" y1="14.83" x2="19.07" y2="19.07" />
       <line x1="14.83" y1="9.17" x2="19.07" y2="4.93" />
       <line x1="9.17" y1="14.83" x2="4.93" y2="19.07" />
-    </>
-  ),
-  progress: (
-    <>
-      <path d="M3 3v18h18" />
-      <path d="m19 9-5 5-4-4-3 3" />
     </>
   ),
   settings: (
@@ -119,7 +110,6 @@ function getDismissedServerSnapshot() {
 export default function DashboardClient({
   profile,
   eligibilityResult,
-  progressRows,
   documents,
   formInfoById,
   initialTab = "plan",
@@ -353,13 +343,6 @@ export default function DashboardClient({
           )}
           {activeTab === "help" && (
             <FindHelp state={profile.state ?? ""} zip={profile.zip_code ?? ""} />
-          )}
-          {activeTab === "progress" && (
-            <ProgressTracker
-              benefits={eligibleBenefits}
-              progressRows={progressRows}
-              userId={profile.id}
-            />
           )}
           {activeTab === "settings" && (
             <SettingsClient profile={profile} documents={documents} embedded />

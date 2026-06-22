@@ -5,14 +5,27 @@
   "description": "Pre-fill government benefit forms using your Wayfinder profile. You always review before submitting.",
   "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "host_permissions": [
-    "http://localhost:3000/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
     "https://wayfinder.app/*",
     "http://*/*",
     "https://*/*"
   ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Wayfinder Form Filler"
+    "default_title": "Wayfinder Form Filler",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "background": {
     "service_worker": "dist/background.js",
@@ -20,7 +33,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://localhost:3000/*", "https://wayfinder.app/*"],
+      "matches": ["http://localhost/*", "http://127.0.0.1/*", "https://wayfinder.app/*"],
       "js": ["dist/appBridge.js"],
       "run_at": "document_start"
     },

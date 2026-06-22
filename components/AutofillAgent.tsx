@@ -16,8 +16,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { agent, detectExtension, type ExecAction } from "@/lib/autofill/agentClient";
 import type { Plan, PlanAction, PageSnapshot } from "@/lib/autofill/plan";
+import { useTranslation } from "@/components/i18n/TranslationProvider";
+import { getSavedInfo, setSavedInfo, canonicalKeyForLabel } from "@/lib/savedInfo";
 
-type Phase = "checking" | "no_extension" | "ready" | "running" | "ask" | "handoff" | "login" | "review" | "done" | "error";
+type Phase = "checking" | "no_extension" | "ready" | "running" | "ask" | "handoff" | "login" | "captcha" | "unreachable" | "review" | "done" | "error";
 type Tone = "info" | "ok" | "warn" | "danger";
 interface FeedItem { id: number; tone: Tone; text: string }
 
@@ -29,6 +31,13 @@ const TONE_DOT: Record<Tone, string> = {
   warn: "bg-review-600",
   danger: "bg-danger-600",
 };
+
+// Turn a canonical saved-info key (e.g. "dateOfBirth") into a readable label
+// ("Date of birth") for the review summary.
+function humanizeKey(key: string): string {
+  const spaced = key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
 
 // A STRUCTURAL signature of the page (url + headings + field identities +
 // button labels) — deliberately excludes field values, so we can tell a real
@@ -46,17 +55,27 @@ export default function AutofillAgent({
   benefitName,
   portalUrl,
   onClose,
+  attorneyNeeded = false,
 }: {
   benefitName: string;
   portalUrl: string;
   onClose: () => void;
+  attorneyNeeded?: boolean;
 }) {
+  const { t } = useTranslation();
+  const af = t.dashboard.autofill;
+
   const [phase, setPhase] = useState<Phase>("checking");
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [ask, setAsk] = useState<{ field: string; question: string } | null>(null);
   const [answer, setAnswer] = useState("");
-  const [handoff, setHandoff] = useState<{ label: string; reason: string } | null>(null);
+  const [handoff, setHandoff] = useState<{ label: string; reason: string; kind?: "consent" } | null>(null);
   const [error, setError] = useState("");
+  // Submit gate: before we hand the user to the official site to submit, they
+  // must confirm they reviewed the information — and, for forms that need a
+  // lawyer, that an attorney/accredited rep reviewed it too.
+  const [reviewedConfirmed, setReviewedConfirmed] = useState(false);
+  const [attorneyConfirmed, setAttorneyConfirmed] = useState(false);
 
   const askedRef = useRef<string[]>([]);
   const answersRef = useRef<Record<string, string>>({});
@@ -65,6 +84,7 @@ export default function AutofillAgent({
   const lastFilledRef = useRef(0);
   const stuckRef = useRef(0);
   const cancelRef = useRef(false);
+  const resumingCaptchaRef = useRef(false);
   const feedIdRef = useRef(0);
   const feedEndRef = useRef<HTMLDivElement | null>(null);
   // Holds the latest advance() so the loop can re-invoke itself after a
@@ -95,7 +115,12 @@ export default function AutofillAgent({
     const res = await fetch("/api/autofill/plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ snapshot, asked: askedRef.current, answers: answersRef.current }),
+      body: JSON.stringify({
+        snapshot,
+        asked: askedRef.current,
+        answers: answersRef.current,
+        savedInfo: getSavedInfo(),
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || "Couldn't plan the next step.");
@@ -113,8 +138,30 @@ export default function AutofillAgent({
     roundsRef.current += 1;
     setPhase("running");
     try {
-      log("info", "Reading the current page…");
-      const snap = await agent.snapshot();
+      log("info", af.agent.readingPage);
+      // Read the page, retrying a couple of times — a real government portal can
+      // take several seconds to settle after a navigation. If we still can't read
+      // it, the page is either mid-load or has thrown up a human-verification step
+      // (a reCAPTCHA / "verify you're not a robot" interstitial) that strips out
+      // our content script, so snapshotting fails before we ever see snap.captcha.
+      // Either way only the user can move it forward — hand it to them via the
+      // captcha-style pause instead of dying with a dead-end "Try again" error.
+      let snap: PageSnapshot | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          snap = await agent.snapshot();
+          break;
+        } catch {
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
+        }
+      }
+      if (!snap) {
+        await agent.focusPortal().catch(() => {});
+        log("warn", af.agent.unreadable);
+        resumingCaptchaRef.current = true; // don't re-pause on a lingering widget once they resume
+        setPhase("unreachable");
+        return;
+      }
       // Progress = the page structure changed (new step) OR we filled a new
       // field. If neither happens across rounds, we're stuck (e.g. clicking a
       // link on an info page that never becomes a form).
@@ -128,6 +175,17 @@ export default function AutofillAgent({
       if (snap.headings[0]) log("info", `On: ${snap.headings[0]}${snap.step ? ` (${snap.step})` : ""}`);
       log("info", `Found ${snap.fields.length} field${snap.fields.length === 1 ? "" : "s"} on this step.`);
 
+      // reCAPTCHA → only a human can solve it. Switch the user to the site and
+      // pause. (We skip this check on the round right after they resume, so a
+      // lingering captcha widget doesn't trap us once they've solved it.)
+      if (snap.captcha && !resumingCaptchaRef.current) {
+        await agent.focusPortal().catch(() => {});
+        log("warn", af.agent.captcha);
+        setPhase("captcha");
+        return;
+      }
+      resumingCaptchaRef.current = false;
+
       const plan = await getPlan(snap);
       if (plan.summary) log("info", plan.summary);
 
@@ -138,7 +196,7 @@ export default function AutofillAgent({
       // application_step), so the agent takes the guest path instead.
       if (plan.pageType === "login") {
         await agent.focusPortal().catch(() => {});
-        log("warn", "This is a sign-in page. Please log in yourself in the portal tab — Wayfinder never sees or stores your password.");
+        log("warn", af.agent.accountWall);
         setPhase("login");
         return;
       }
@@ -148,8 +206,8 @@ export default function AutofillAgent({
       // wall, or a dead end — not a fillable application.
       if (stuckRef.current >= 2) {
         await agent.focusPortal().catch(() => {});
-        setPhase("done");
-        log("warn", "I can't make progress on this page — it looks like an information or navigation page (or a login wall), not a fillable application form. Open the actual application form, sign in first if needed, and run me again — or fill it out by hand.");
+        log("warn", af.agent.accountWallStuck);
+        setPhase("login");
         return;
       }
 
@@ -182,8 +240,9 @@ export default function AutofillAgent({
       // 2) Review/submit page → highlight sensitive fields, stop (never submit).
       if (review) {
         for (const h of handoffs) await agent.highlight(h.ref).catch(() => {});
-        await agent.focusPortal().catch(() => {});
-        log("warn", "Review step reached. Please review everything and submit it yourself.");
+        // Don't jump to the portal yet — show the review gate here first. The
+        // user reviews their info and confirms before we let them go submit.
+        log("ok", af.agent.reviewReady);
         setPhase("review");
         return;
       }
@@ -195,14 +254,15 @@ export default function AutofillAgent({
       const onlyNeedsUser = !fills.length && !click && (asks.length > 0 || handoffs.length > 0);
       if (stuckRef.current >= 1 && onlyNeedsUser) {
         await agent.focusPortal().catch(() => {});
-        setPhase("done");
-        log("warn", "This page doesn't look like an application form I can fill — it may be an information, sign-up, or login page rather than the actual benefit application. Open the real application form (or sign in first), then run me again. You can also fill it out by hand.");
+        log("warn", af.agent.accountWallStuck);
+        setPhase("login");
         return;
       }
 
       // 3) Missing info → ask the user (one question; we re-plan after the answer).
+      //    Stay on Wayfinder — the question is answered here in the panel, NOT on
+      //    the portal, so we do NOT switch tabs.
       if (asks.length) {
-        await agent.focusPortal().catch(() => {});
         const a = asks[0];
         log("warn", `Need your input: ${a.question}`);
         setAsk({ field: a.field, question: a.question });
@@ -210,13 +270,20 @@ export default function AutofillAgent({
         return;
       }
 
-      // 4) Sensitive field mid-form → hand control to the user.
+      // 4) Sensitive field mid-form → hand control to the user. A legal
+      //    consent/agreement step gets a special "talk to your attorney first"
+      //    message instead of the generic sensitive hand-off.
       if (handoffs.length) {
         const h = handoffs[0];
         await agent.highlight(h.ref).catch(() => {});
         await agent.focusPortal().catch(() => {});
-        log("warn", `${h.label} is sensitive — please enter it yourself in the portal.`);
-        setHandoff({ label: h.label, reason: h.reason });
+        const isConsent = /\b(agree|consent|terms|certif|attest|rights and responsib|authoriz|penalty of perjury)\b/i.test(h.label);
+        if (isConsent) {
+          log("warn", "This form has a legal agreement to accept. Please talk to your attorney or accredited representative before you check it.");
+        } else {
+          log("warn", `${h.label} is sensitive — please enter it yourself in the portal.`);
+        }
+        setHandoff({ label: h.label, reason: h.reason, kind: isConsent ? "consent" : undefined });
         setPhase("handoff");
         return;
       }
@@ -229,10 +296,12 @@ export default function AutofillAgent({
         return;
       }
 
-      // 6) Done, or stuck with nothing left to do.
+      // 6) Done, or stuck with nothing left to do → take the user to the portal
+      //    to review and submit (we never submit for them).
       if (done || stuckRef.current >= 1) {
+        // Same as review: hold on Wayfinder for the review gate before submit.
         setPhase("done");
-        log("ok", done ? "All done on this application." : "Nothing left to fill automatically — over to you.");
+        log("ok", done ? af.agent.allDone : af.agent.nothingLeft);
         return;
       }
 
@@ -242,7 +311,7 @@ export default function AutofillAgent({
       setError(e instanceof Error ? e.message : "Something went wrong.");
       setPhase("error");
     }
-  }, [log]);
+  }, [log, af]);
 
   // Keep the ref pointing at the current advance() for the recursive timeouts.
   useEffect(() => { advanceRef.current = () => { void advance(); }; }, [advance]);
@@ -253,11 +322,15 @@ export default function AutofillAgent({
     answersRef.current = {};
     roundsRef.current = 0;
     lastSigRef.current = "";
+    lastFilledRef.current = 0;
     stuckRef.current = 0;
+    resumingCaptchaRef.current = false;
     cancelRef.current = false;
+    setReviewedConfirmed(false);
+    setAttorneyConfirmed(false);
     setPhase("running");
     try {
-      log("info", "Opening the benefits portal…");
+      log("info", af.agent.openingPortal);
       await agent.openPortal(portalUrl);
       await advance();
     } catch (e) {
@@ -272,15 +345,35 @@ export default function AutofillAgent({
     if (!v) return;
     answersRef.current[ask.field] = v;
     if (!askedRef.current.includes(ask.field)) askedRef.current.push(ask.field);
+    // Remember reusable, non-sensitive answers for future forms. The planner only
+    // uses ask_user for ordinary facts (sensitive ones go through handoff), and
+    // canonicalKeyForLabel returns null for anything sensitive or unrecognized —
+    // so nothing sensitive is ever persisted here.
+    const key = canonicalKeyForLabel(ask.field) ?? canonicalKeyForLabel(ask.question);
+    if (key) setSavedInfo({ [key]: v });
     log("ok", `You answered: ${v}`);
     setAsk(null);
     setAnswer("");
+    // Answering a question IS forward progress. Reset the stuck counter so the
+    // next round — often another ask_user on a normal multi-field form — isn't
+    // misread as "stuck" and wrongly bounced to the create-an-account wall.
+    stuckRef.current = 0;
     void advance();
   }
 
   function resumeFromHandoff() {
     setHandoff(null);
-    log("info", "Thanks — continuing.");
+    // Resolving a hand-off (e.g. they created an account or signed in) is real
+    // progress — clear the stuck counter so we don't immediately re-pause.
+    stuckRef.current = 0;
+    void advance();
+  }
+
+  function resumeFromCaptcha() {
+    // Skip the captcha check on the next round so a still-present widget doesn't
+    // immediately re-pause us now that the user has solved it.
+    resumingCaptchaRef.current = true;
+    log("info", af.agent.resuming);
     void advance();
   }
 
@@ -292,6 +385,16 @@ export default function AutofillAgent({
 
   const busy = phase === "running";
 
+  // Everything Wayfinder knows about the user (their saved "My Information"),
+  // shown in the review gate so they can verify it before submitting.
+  const infoRows: Array<{ label: string; value: string }> =
+    phase === "review" || phase === "done"
+      ? Object.entries(getSavedInfo())
+          .filter(([, v]) => v && v.trim())
+          .map(([k, v]) => ({ label: humanizeKey(k), value: v }))
+      : [];
+  const canSubmit = reviewedConfirmed && (!attorneyNeeded || attorneyConfirmed);
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label="AI application assistant">
       <button aria-hidden="true" tabIndex={-1} className="absolute inset-0 bg-black/40" onClick={cancel} />
@@ -299,7 +402,7 @@ export default function AutofillAgent({
         {/* Header */}
         <div className="flex items-start justify-between gap-3 border-b border-border bg-harbor-50 px-5 py-4">
           <div>
-            <h2 className="font-display text-lg font-bold text-text">Fill out with AI</h2>
+            <h2 className="font-display text-lg font-bold text-text">{af.assistantTitle}</h2>
             <p className="text-sm text-text-muted">{benefitName}</p>
           </div>
           <button onClick={cancel} aria-label="Close" className="rounded-md p-1.5 text-text-muted hover:bg-harbor-100 hover:text-text focus-visible:outline-none">
@@ -331,7 +434,25 @@ export default function AutofillAgent({
 
           {phase !== "checking" && phase !== "no_extension" && (
             <>
-              {feed.length === 0 ? (
+              {/* Prominent, friendly loading state while the agent is actively
+                  snapshotting / planning / filling. The live log stays visible
+                  below it so the user can still follow along. */}
+              {busy && (
+                <div
+                  className="mb-4 flex flex-col items-center gap-3 rounded-[--radius-md] border border-harbor-200 bg-harbor-50 px-4 py-6 text-center"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-9 w-9 animate-spin rounded-full border-[3px] border-harbor-200 border-t-harbor-500"
+                  />
+                  <p className="text-base font-semibold text-text">{af.filling}</p>
+                  <p className="text-sm text-text-muted">{af.fillingHint}</p>
+                </div>
+              )}
+
+              {feed.length === 0 && !busy ? (
                 <p className="text-sm text-text-muted">
                   Wayfinder will open the application portal, fill what it can from your profile, ask you about anything it doesn&apos;t know, and pause for anything sensitive. It never submits — you always do that yourself.
                 </p>
@@ -343,12 +464,6 @@ export default function AutofillAgent({
                       <span>{it.text}</span>
                     </li>
                   ))}
-                  {busy && (
-                    <li className="flex items-center gap-2.5 text-sm text-text-muted">
-                      <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-harbor-200 border-t-harbor-500" aria-hidden="true" />
-                      Working…
-                    </li>
-                  )}
                   <div ref={feedEndRef} />
                 </ul>
               )}
@@ -374,51 +489,152 @@ export default function AutofillAgent({
               {/* Sensitive handoff */}
               {phase === "handoff" && handoff && (
                 <div className="mt-4 rounded-[--radius-md] border-2 border-review-100 bg-review-50 p-4">
-                  <p className="text-sm font-semibold text-review-700">This field is sensitive: {handoff.label}</p>
-                  <p className="mt-1 text-sm text-review-700">{handoff.reason} We&apos;ve highlighted it in the portal tab. Please enter it there yourself, then resume.</p>
+                  {handoff.kind === "consent" ? (
+                    <>
+                      <p className="text-sm font-semibold text-review-700">Talk to your attorney before you agree</p>
+                      <p className="mt-1 text-sm text-review-700">
+                        This form has a legal agreement to accept (&ldquo;{handoff.label}&rdquo;). Because it can affect your immigration case, <strong>please reach out to your attorney or a DOJ-accredited representative before you check this box and continue.</strong>
+                      </p>
+                      <div className="mt-2 rounded-[--radius-md] border border-review-100 bg-surface px-3 py-2 text-sm">
+                        <p className="font-semibold text-text">Iowa Migrant Movement for Justice — legal aid</p>
+                        <p className="text-text-muted">(515) 255-9809 · info@iowammj.org</p>
+                        <p className="mt-1 text-xs text-text-faint">You can find more legal help in the Find Help tab.</p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-semibold text-review-700">This field is sensitive: {handoff.label}</p>
+                      <p className="mt-1 text-sm text-review-700">{handoff.reason} We&apos;ve highlighted it in the portal tab. Please enter it there yourself, then resume.</p>
+                    </>
+                  )}
                   <div className="mt-3 flex gap-2">
                     <button onClick={() => agent.focusPortal()} className="flex-1 rounded-[--radius-md] border-2 border-review-100 bg-surface py-2.5 text-sm font-semibold text-review-700 hover:bg-review-50">
                       Open the portal
                     </button>
                     <button onClick={resumeFromHandoff} className="flex-1 rounded-[--radius-md] bg-primary py-2.5 text-sm font-semibold text-on-primary hover:bg-primary-hover">
-                      I&apos;ve done it — Resume
+                      {handoff.kind === "consent" ? "I've spoken with them — Continue" : "I've filled it in — Continue"}
                     </button>
                   </div>
                 </div>
               )}
 
-              {/* Login wall hand-off */}
+              {/* Account / sign-in wall — the user must create an account (or sign
+                  in) on the site, then resume. Reuses the standard resume path so
+                  the agent re-snapshots and re-plans where it left off. */}
               {phase === "login" && (
                 <div className="mt-4 rounded-[--radius-md] border-2 border-harbor-200 bg-harbor-50 p-4">
-                  <p className="text-sm font-semibold text-text">Please sign in to continue</p>
-                  <p className="mt-1 text-sm text-text-muted">
-                    This site needs you to log in first. Sign in yourself in the portal tab — <strong>Wayfinder never sees or stores your password.</strong> Once you&apos;re signed in and on the application form, click Resume and I&apos;ll fill it in.
-                  </p>
+                  <p className="text-sm font-semibold text-text">{af.createAccountTitle}</p>
+                  <p className="mt-1 text-sm text-text-muted">{af.createAccountBody}</p>
                   <div className="mt-3 flex gap-2">
                     <button onClick={() => agent.focusPortal()} className="flex-1 rounded-[--radius-md] border-2 border-harbor-300 bg-surface py-2.5 text-sm font-semibold text-harbor-700 hover:bg-harbor-50">
-                      Open the portal
+                      {af.openPortal}
                     </button>
                     <button onClick={resumeFromHandoff} className="flex-1 rounded-[--radius-md] bg-primary py-2.5 text-sm font-semibold text-on-primary hover:bg-primary-hover">
-                      I&apos;m signed in — Resume
+                      {af.createAccountResume}
                     </button>
                   </div>
                 </div>
               )}
 
-              {/* Review gate */}
-              {phase === "review" && (
-                <div className="mt-4 rounded-[--radius-md] border-2 border-success-100 bg-success-50 p-4">
-                  <p className="text-sm font-semibold text-success-700">Review &amp; submit — it&apos;s your turn.</p>
-                  <p className="mt-1 text-sm text-success-700">Wayfinder filled what it safely could and stopped before submitting. Open the portal, review every field, complete any sensitive ones, and submit when you&apos;re ready.</p>
-                  <button onClick={() => agent.focusPortal()} className="mt-3 w-full rounded-[--radius-md] bg-success-600 py-2.5 text-sm font-semibold text-white hover:bg-success-700">
-                    Open the portal to review
-                  </button>
+              {/* reCAPTCHA hand-off */}
+              {phase === "captcha" && (
+                <div className="mt-4 rounded-[--radius-md] border-2 border-review-100 bg-review-50 p-4">
+                  <p className="text-sm font-semibold text-text">Please complete the reCAPTCHA yourself</p>
+                  <p className="mt-1 text-sm text-text-muted">
+                    This page has a &ldquo;verify you&apos;re not a robot&rdquo; check that only you can do. <strong>Please complete it yourself in the portal tab</strong> — I can&apos;t do this part. When you&apos;re finished, click below and I&apos;ll continue.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button onClick={() => agent.focusPortal()} className="flex-1 rounded-[--radius-md] border-2 border-review-100 bg-surface py-2.5 text-sm font-semibold text-review-700 hover:bg-review-50">
+                      Open the portal
+                    </button>
+                    <button onClick={resumeFromCaptcha} className="flex-1 rounded-[--radius-md] bg-primary py-2.5 text-sm font-semibold text-on-primary hover:bg-primary-hover">
+                      I&apos;ve filled it out — Continue
+                    </button>
+                  </div>
                 </div>
               )}
 
-              {phase === "done" && (
-                <div className="mt-4 rounded-[--radius-md] border border-success-100 bg-success-50 px-4 py-3 text-sm text-success-700">
-                  Finished what could be filled automatically. Review and submit on the portal yourself.
+              {/* Page couldn't be read — likely a verification step (reCAPTCHA)
+                  or the page is still loading. Hand it to the user to finish,
+                  then resume right where we left off (same path as captcha). */}
+              {phase === "unreachable" && (
+                <div className="mt-4 rounded-[--radius-md] border-2 border-review-100 bg-review-50 p-4">
+                  <p className="text-sm font-semibold text-text">I can&apos;t read this page</p>
+                  <p className="mt-1 text-sm text-text-muted">
+                    The page didn&apos;t respond — it may still be loading, or it may have a step only you can do (like a &ldquo;verify you&apos;re not a robot&rdquo; check). <strong>Open the portal tab, finish anything it&apos;s asking for, and let it finish loading</strong> — then click Continue and I&apos;ll pick up where I left off.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button onClick={() => agent.focusPortal()} className="flex-1 rounded-[--radius-md] border-2 border-review-100 bg-surface py-2.5 text-sm font-semibold text-review-700 hover:bg-review-50">
+                      Open the portal
+                    </button>
+                    <button onClick={resumeFromCaptcha} className="flex-1 rounded-[--radius-md] bg-primary py-2.5 text-sm font-semibold text-on-primary hover:bg-primary-hover">
+                      Continue
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Review-and-submit gate. The agent never submits; before we send
+                  the user to the official site to submit, they must review the
+                  information Wayfinder used and confirm it — plus confirm an
+                  attorney reviewed it, when the form needs one. The "continue"
+                  button stays locked until those boxes are checked. */}
+              {(phase === "review" || phase === "done") && (
+                <div className="mt-4 rounded-[--radius-md] border-2 border-success-100 bg-success-50 p-4">
+                  <p className="text-sm font-semibold text-success-700">{af.reviewTitle}</p>
+                  <p className="mt-1 text-sm text-success-700">{af.reviewIntro}</p>
+
+                  <div className="mt-3 rounded-[--radius-md] border border-success-100 bg-surface p-3">
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wider text-text-muted">{af.reviewInfoTitle}</p>
+                    {infoRows.length === 0 ? (
+                      <p className="text-sm text-text-muted">{af.reviewNoInfo}</p>
+                    ) : (
+                      <dl className="flex flex-col gap-1.5">
+                        {infoRows.map((r) => (
+                          <div key={r.label} className="flex justify-between gap-3 text-sm">
+                            <dt className="text-text-muted">{r.label}</dt>
+                            <dd className="text-right font-medium text-text">{r.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                  </div>
+
+                  <label className="mt-3 flex items-start gap-2.5 text-sm text-text">
+                    <input
+                      type="checkbox"
+                      checked={reviewedConfirmed}
+                      onChange={(e) => setReviewedConfirmed(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 flex-shrink-0 accent-success-600"
+                    />
+                    <span>{af.reviewConfirm}</span>
+                  </label>
+
+                  {attorneyNeeded && (
+                    <>
+                      <div className="mt-2 rounded-[--radius-md] border border-review-100 bg-review-50 px-3 py-2 text-sm text-review-700">
+                        {af.attorneyNote}
+                      </div>
+                      <label className="mt-2 flex items-start gap-2.5 text-sm text-text">
+                        <input
+                          type="checkbox"
+                          checked={attorneyConfirmed}
+                          onChange={(e) => setAttorneyConfirmed(e.target.checked)}
+                          className="mt-0.5 h-4 w-4 flex-shrink-0 accent-success-600"
+                        />
+                        <span>{af.attorneyConfirm}</span>
+                      </label>
+                    </>
+                  )}
+
+                  <button
+                    onClick={() => agent.focusPortal()}
+                    disabled={!canSubmit}
+                    className="mt-3 w-full rounded-[--radius-md] bg-success-600 py-2.5 text-sm font-semibold text-white transition hover:bg-success-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {af.proceedToSubmit}
+                  </button>
+                  <p className="mt-2 text-center text-xs text-text-faint">{af.neverSubmitNote}</p>
                 </div>
               )}
 

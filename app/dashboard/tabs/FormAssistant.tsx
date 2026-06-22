@@ -26,7 +26,7 @@ interface Props {
 // extraction route's FORBIDDEN_FIELDS — even if a document somehow has one of
 // these in extracted_fields, it must not leave the browser.
 const SENSITIVE_FIELD_RE =
-  /ssn|social.?security|a.?number|alien.?reg|uscis|passport|bank|account|routing|card/i;
+  /ssn|social.?security|\bein\b|employer.?id(entification)?(.?number)?|\bitin\b|individual.?taxpayer|taxpayer.?id|\btin\b|a.?number|alien.?reg|uscis|passport|bank|account|routing|card/i;
 
 // Income brackets keep the user's exact dollar figure out of the prompt.
 function incomeBand(monthly: number | null | undefined): string | null {

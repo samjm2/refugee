@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useTranslation } from "@/components/i18n/TranslationProvider";
+import { setSavedInfo, canonicalKeyForLabel } from "@/lib/savedInfo";
+import { loadExampleI94File } from "@/lib/exampleI94";
 import DocumentPreview from "@/components/DocumentPreview";
 import type { Document } from "@/lib/types";
 
@@ -30,13 +32,15 @@ function isPdfDoc(doc: Document): boolean {
 // Documents that make applications go smoothly. We mark one "added" if any
 // uploaded doc matches by type or file name. Sensitive cards (SSN) are never
 // asked for here.
-const RECOMMENDED: { label: string; why: string; match: (d: Document) => boolean }[] = [
-  { label: "I-94 Arrival/Departure Record", why: "Confirms your status and date of entry", match: (d) => d.document_type === "i-94" || /i[\s_-]?94/i.test(d.file_name) },
-  { label: "Work permit (EAD)", why: "Your employment authorization card", match: (d) => d.document_type === "ead" || /ead|work[\s_-]?permit/i.test(d.file_name) },
-  { label: "Photo ID or passport", why: "Proves your identity and name", match: (d) => d.document_type === "passport" || /passport|driver|licen[cs]e|\bid\b|green[\s_-]?card/i.test(d.file_name) },
-  { label: "Status or approval letter", why: "Refugee/asylee/ORR approval (I-797)", match: (d) => d.document_type === "status_letter" || /status|asylum|\borr\b|approval|i-?797/i.test(d.file_name) },
-  { label: "Proof of address", why: "Lease or utility bill — fills your address", match: (d) => /lease|utility|bill|statement|address|residence/i.test(d.file_name) },
-  { label: "Proof of income", why: "Pay stub or benefit letter — many forms ask for it", match: (d) => /pay[\s_-]?stub|income|wage|w-?2|1099|benefit[\s_-]?letter/i.test(d.file_name) },
+// Display strings live in i18n (dashboard.documents.recommendedItems.<key>);
+// only the stable key + match predicate stay in code so the list translates.
+const RECOMMENDED: { key: string; match: (d: Document) => boolean }[] = [
+  { key: "i94", match: (d) => d.document_type === "i-94" || /i[\s_-]?94/i.test(d.file_name) },
+  { key: "ead", match: (d) => d.document_type === "ead" || /ead|work[\s_-]?permit/i.test(d.file_name) },
+  { key: "id", match: (d) => d.document_type === "passport" || /passport|driver|licen[cs]e|\bid\b|green[\s_-]?card/i.test(d.file_name) },
+  { key: "statusLetter", match: (d) => d.document_type === "status_letter" || /status|asylum|\borr\b|approval|i-?797/i.test(d.file_name) },
+  { key: "address", match: (d) => /lease|utility|bill|statement|address|residence/i.test(d.file_name) },
+  { key: "income", match: (d) => /pay[\s_-]?stub|income|wage|w-?2|1099|benefit[\s_-]?letter/i.test(d.file_name) },
 ];
 
 // Best-effort guess of which document this is, from the file name. Falls back to
@@ -67,6 +71,43 @@ export default function DocumentsVault({ documents: initial, userId }: Props) {
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Re-fetch documents fresh on mount. The `initial` prop is server-rendered at
+  // first dashboard load; when the user switches tabs this component unmounts and
+  // remounts with that STALE prop, so anything uploaded mid-session would vanish
+  // from the list (it's still in Supabase). Refreshing from the DB on every mount
+  // keeps the vault in sync. `initial` is kept as the first paint to avoid a flash.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("documents")
+        .select("*")
+        .eq("user_id", userId)
+        .order("uploaded_at", { ascending: false });
+      if (!cancelled && !error && data) {
+        setDocs(data as Document[]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  // After a document's fields are extracted, mirror the non-sensitive ones into
+  // the shared saved-info store so they're reused across the app (forms, settings).
+  // canonicalKeyForLabel drops anything sensitive or that we don't track.
+  function mirrorExtractedToSavedInfo(fields: Record<string, string> | null | undefined) {
+    if (!fields) return;
+    const patch: Record<string, string> = {};
+    for (const [key, value] of Object.entries(fields)) {
+      if (value == null || !String(value).trim()) continue;
+      const canonical = canonicalKeyForLabel(key);
+      if (canonical) patch[canonical] = String(value).trim();
+    }
+    if (Object.keys(patch).length) setSavedInfo(patch);
+  }
+
   function docTypeLabel(value: string | null): string {
     const key = (DOC_TYPE_VALUES as readonly string[]).includes(value ?? "")
       ? (value as DocTypeValue)
@@ -74,10 +115,19 @@ export default function DocumentsVault({ documents: initial, userId }: Props) {
     return t.dashboard.documents.types[key];
   }
 
-  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    void uploadFile(file).finally(() => {
+      if (fileRef.current) fileRef.current.value = "";
+    });
+  }
 
+  // Core upload + extract path, shared by the file picker / drag-drop and the
+  // "example I-94" button. Uploads to the user-documents bucket, inserts the
+  // documents row, runs extraction, then refreshes the row and mirrors its
+  // non-sensitive extracted fields into the shared saved-info store.
+  async function uploadFile(file: File) {
     setUploading(true);
     const supabase = createClient();
     const path = `${userId}/${Date.now()}_${file.name}`;
@@ -133,14 +183,28 @@ export default function DocumentsVault({ documents: initial, userId }: Props) {
         .single();
       if (updated) {
         setDocs((d) => d.map((x) => (x.id === doc.id ? (updated as Document) : x)));
+        // Reuse the non-sensitive extracted facts everywhere else in the app.
+        mirrorExtractedToSavedInfo(
+          (updated as Document).extracted_fields as Record<string, string> | null | undefined,
+        );
       }
     } catch {
       // Non-blocking — extraction failed silently
     } finally {
       setExtracting(null);
     }
+  }
 
-    if (fileRef.current) fileRef.current.value = "";
+  // "Use an example I-94 (for judges)" — load the bundled sample File and run it
+  // through the exact same upload + extract pipeline as a normal upload.
+  async function handleExampleI94() {
+    if (uploading) return;
+    try {
+      const file = await loadExampleI94File();
+      await uploadFile(file);
+    } catch {
+      alert("Could not load the example I-94.");
+    }
   }
 
   async function handleDelete(doc: Document) {
@@ -210,15 +274,16 @@ export default function DocumentsVault({ documents: initial, userId }: Props) {
 
       {/* Recommended documents — what to add for a smooth application. */}
       <div className="mb-8 rounded-[--radius-lg] border border-border bg-surface p-5 md:p-6">
-        <h3 className="font-display text-lg font-bold text-text">Recommended documents</h3>
+        <h3 className="font-display text-lg font-bold text-text">{t.dashboard.documents.recommendedTitle}</h3>
         <p className="mb-4 mt-1 text-sm text-text-muted">
-          Add these so Wayfinder can read them once and fill them into your applications. The more you add, the less you retype.
+          {t.dashboard.documents.recommendedHint}
         </p>
         <ul className="flex flex-col gap-2.5">
           {RECOMMENDED.map((rec) => {
             const have = docs.some(rec.match);
+            const item = (t.dashboard.documents.recommendedItems as Record<string, { label: string; why: string }>)[rec.key];
             return (
-              <li key={rec.label} className="flex items-start gap-3">
+              <li key={rec.key} className="flex items-start gap-3">
                 <span
                   aria-hidden="true"
                   className={`mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full ${have ? "bg-success-600 text-white" : "border-2 border-border-strong text-transparent"}`}
@@ -226,8 +291,8 @@ export default function DocumentsVault({ documents: initial, userId }: Props) {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
                 </span>
                 <span className="flex-1">
-                  <span className={`text-sm font-semibold ${have ? "text-text" : "text-text-muted"}`}>{rec.label}</span>
-                  <span className="ml-2 text-sm text-text-faint">{have ? "· added" : `· ${rec.why}`}</span>
+                  <span className={`text-sm font-semibold ${have ? "text-text" : "text-text-muted"}`}>{item.label}</span>
+                  <span className="ml-2 text-sm text-text-faint">{have ? `· ${t.dashboard.documents.added}` : `· ${item.why}`}</span>
                 </span>
               </li>
             );
@@ -297,6 +362,35 @@ export default function DocumentsVault({ documents: initial, userId }: Props) {
           onChange={handleUpload}
           disabled={uploading}
         />
+      </div>
+
+      {/* Example I-94 — a subtle shortcut so judges can see extraction without a
+          real document on hand. Runs the same upload + extract pipeline. */}
+      <div className="mb-8 -mt-4 flex flex-col items-center gap-1.5 text-center">
+        <button
+          type="button"
+          onClick={handleExampleI94}
+          disabled={uploading}
+          className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-[--radius-md] border border-border bg-surface px-4 py-2 text-sm font-medium text-text-muted transition hover:bg-surface-2 hover:text-text active:scale-[0.98] focus-visible:outline-none focus-visible:shadow-focus disabled:opacity-60"
+        >
+          <svg
+            aria-hidden="true"
+            className="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+            <path d="M12 18v-6" />
+            <path d="m9 15 3 3 3-3" />
+          </svg>
+          {t.dashboard.documents.exampleI94}
+        </button>
+        <p className="text-xs text-text-faint">{t.dashboard.documents.exampleI94Hint}</p>
       </div>
 
       {/* Document list */}

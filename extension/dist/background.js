@@ -57,7 +57,7 @@ async function handleAgent(type, payload) {
     if (type === "agent-open") {
       const url = payload?.url;
       if (!url || !/^https?:\/\//.test(url)) return { ok: false, error: "Invalid portal URL." };
-      const tab = await chrome.tabs.create({ url, active: true });
+      const tab = await chrome.tabs.create({ url, active: false });
       await setPortalTab(tab.id);
       if (tab.id !== void 0) {
         try {
@@ -157,7 +157,7 @@ async function fillCurrentTab(values) {
   }
 }
 function fillFields(values) {
-  const SENSITIVE_RE = /ssn|social.?security|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank/i;
+  const SENSITIVE_RE = /ssn|social.?security|\bein\b|employer.?id(entification)?(.?number)?|\bitin\b|individual.?taxpayer|taxpayer.?id|\btin\b|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank/i;
   let filled = 0;
   const inputs = document.querySelectorAll(
     "input[type=text], input[type=email], input[type=tel], input[type=date], input:not([type]), textarea"

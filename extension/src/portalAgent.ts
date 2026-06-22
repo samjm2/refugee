@@ -27,6 +27,7 @@ interface PageSnapshot {
   buttons: SnapshotButton[];
   errors: string[];
   step?: string;
+  captcha?: boolean; // a reCAPTCHA / hCaptcha the user must complete by hand
 }
 type ExecAction =
   | { action: "fill"; ref: string; value: string }
@@ -35,7 +36,7 @@ type ExecAction =
   | { action: "click"; ref: string };
 
 const SENSITIVE_RE =
-  /ssn|social.?security|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank|password|security.?question|signature|certif|attest|under penalty/i;
+  /ssn|social.?security|\bein\b|employer.?id(entification)?(.?number)?|\bitin\b|individual.?taxpayer|taxpayer.?id|\btin\b|alien|a-?number|a\s*#|a#|uscis|account|routing|\bcard\b|passport|i-?94\s*number|receipt.?number|bank|password|security.?question|verification.?code|security.?code|one.?time.?(code|password|passcode)|\botp\b|confirmation.?code|captcha|not a robot|signature|certif|attest|under penalty|penalty of perjury|\bconsent\b|i agree|agree to (allow|the)|authoriz|allow my information/i;
 const FINAL_SUBMIT_RE = /\b(submit|file|finish|complete|confirm|sign|certify|agree|pay|place order|send application)\b/i;
 const NEXT_RE = /\b(next|continue|save (and|&) continue|proceed|go on|forward|start)\b/i;
 
@@ -168,6 +169,13 @@ function snapshot(): PageSnapshot {
   const bodyText = (document.body.innerText || "").slice(0, 4000);
   const stepMatch = bodyText.match(/step\s+\d+\s+of\s+\d+/i) || bodyText.match(/page\s+\d+\s+of\s+\d+/i);
 
+  // A reCAPTCHA / hCaptcha must be solved by the user — detect it so the agent
+  // can pause and hand off rather than getting stuck.
+  const captcha =
+    !!document.querySelector(
+      'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, [data-sitekey], .h-captcha, #g-recaptcha-response',
+    ) || /\b(re ?captcha|hcaptcha|not a robot|verify you are (not )?human|i'?m not a robot)\b/i.test(bodyText);
+
   return {
     url: location.href,
     title: document.title,
@@ -176,6 +184,7 @@ function snapshot(): PageSnapshot {
     buttons,
     errors,
     step: stepMatch ? stepMatch[0] : undefined,
+    captcha,
   };
 }
 

@@ -9,6 +9,7 @@ import {
   validatePlan,
   type PageSnapshot,
 } from "@/lib/autofill/plan";
+import { overlayValues, type SavedInfo } from "@/lib/savedInfo";
 import type { Profile } from "@/lib/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { snapshot?: unknown; asked?: unknown; answers?: unknown };
+  let body: { snapshot?: unknown; asked?: unknown; answers?: unknown; savedInfo?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -67,6 +68,13 @@ export async function POST(req: NextRequest) {
     .order("uploaded_at", { ascending: false });
   for (const d of docs ?? []) {
     values = mergeDocumentFields(values, d.extracted_fields as Record<string, string> | null | undefined);
+  }
+
+  // Overlay the user's reusable "My Information" answers (sent from the client)
+  // onto the value bag. overlayValues only fills gaps, so saved profile/document
+  // facts take precedence over these previously-saved answers.
+  if (body.savedInfo && typeof body.savedInfo === "object") {
+    values = overlayValues(values, body.savedInfo as SavedInfo);
   }
 
   // Answers the user typed into the agent's "missing info" prompts. Known

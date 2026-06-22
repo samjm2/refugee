@@ -1,5 +1,14 @@
 // Extension popup script.
 
+// Exact Vercel hostname(s) we deploy Wayfinder under. NEVER use a wildcard like
+// "*.vercel.app" — that namespace is shared, so any attacker could deploy there
+// and be auto-trusted. Add your real production host here, e.g.
+// "wayfinder.vercel.app". Must also be listed in manifest.json (host_permissions
+// and the appBridge content-script "matches").
+const TRUSTED_VERCEL_HOSTS = new Set<string>([
+  // "wayfinder.vercel.app",
+]);
+
 const content = document.getElementById("content")!;
 
 function html(s: string) {
@@ -37,12 +46,11 @@ function renderUnpaired() {
 function renderPaired(pairedAt?: number) {
   const date = pairedAt ? new Date(pairedAt).toLocaleDateString() : "Unknown";
   html(`
-    <div class="success">✓ Connected to Wayfinder</div>
+    <div class="success">Connected ✓</div>
     <p class="paired-info">Paired on ${date}</p>
-    <button class="btn btn-primary" id="btn-fill" style="margin-top:12px">Fill Detected Fields</button>
-    <button class="btn btn-secondary" id="btn-disconnect">Disconnect</button>
+    <p class="status" style="margin-top:8px">Open Wayfinder in your browser and use <strong>Fill out with AI</strong> on a benefit to fill forms.</p>
+    <button class="btn btn-secondary" id="btn-disconnect" style="margin-top:12px">Disconnect</button>
   `);
-  document.getElementById("btn-fill")!.addEventListener("click", fillCurrentPage);
   document.getElementById("btn-disconnect")!.addEventListener("click", disconnect);
 }
 
@@ -59,6 +67,9 @@ async function detectOrigin(): Promise<string> {
         if (h === "localhost" || h === "127.0.0.1") return u.origin;
         // Anchored suffix match so "evilwayfinder.app" can't impersonate us.
         if (h === "wayfinder.app" || h.endsWith(".wayfinder.app")) return u.origin;
+        // Our exact Vercel deployment ONLY. Never trust the whole *.vercel.app
+        // namespace — anyone can deploy there and impersonate us.
+        if (TRUSTED_VERCEL_HOSTS.has(h)) return u.origin;
       } catch { /* ignore */ }
     }
   } catch { /* tabs permission missing */ }
@@ -74,15 +85,15 @@ async function startPairing() {
     <div style="margin: 10px 0;">
       <input id="code-input" type="text" maxlength="8" placeholder="e.g. AB1C2D" style="width:100%;padding:10px;border:2px solid #e5e7eb;border-radius:8px;font-family:monospace;font-size:18px;letter-spacing:3px;text-align:center;text-transform:uppercase" />
     </div>
-    <label style="display:block;font-size:11px;color:#6b7280;margin:8px 0 4px">Wayfinder server</label>
-    <input id="origin-input" type="text" value="${origin}" style="width:100%;padding:8px;border:2px solid #e5e7eb;border-radius:8px;font-size:12px;font-family:monospace" />
     <button class="btn btn-primary" id="btn-exchange" style="margin-top:12px">Confirm Code</button>
     <button class="btn btn-secondary" id="btn-cancel-pair">Cancel</button>
   `);
 
   const submit = async () => {
     const code = (document.getElementById("code-input") as HTMLInputElement).value.trim().toUpperCase();
-    const originVal = (document.getElementById("origin-input") as HTMLInputElement).value.trim().replace(/\/$/, "");
+    // Origin is auto-detected (see detectOrigin); persist it so the background
+    // worker can reach the right Wayfinder server when exchanging the code.
+    const originVal = origin.trim().replace(/\/$/, "");
     if (originVal) await chrome.storage.local.set({ wf_origin: originVal });
     void exchangeCode(code);
   };
@@ -110,39 +121,6 @@ async function exchangeCode(code: string) {
     setTimeout(renderUnpaired, 2500);
   } else {
     renderPaired(Date.now());
-  }
-}
-
-async function fillCurrentPage() {
-  const btn = document.getElementById("btn-fill") as HTMLButtonElement;
-  btn.disabled = true;
-  btn.textContent = "Loading your profile...";
-
-  const profileRes = await chrome.runtime.sendMessage({ type: "get-profile-values" }) as {
-    ok: boolean; values?: Record<string, string>; error?: string;
-  };
-
-  if (!profileRes.ok || !profileRes.values) {
-    html(`<div class="error">${profileRes.error ?? "Failed to load profile"}</div>`);
-    setTimeout(() => renderPaired(), 2500);
-    return;
-  }
-
-  btn.textContent = "Filling fields...";
-  const fillRes = await chrome.runtime.sendMessage({ type: "fill-fields", values: profileRes.values }) as {
-    ok: boolean; filled?: number; error?: string;
-  };
-
-  if (!fillRes.ok) {
-    html(`<div class="error">${fillRes.error ?? "Fill failed"}</div>`);
-    setTimeout(() => renderPaired(), 2500);
-  } else {
-    html(`
-      <div class="success">✓ Filled ${fillRes.filled ?? 0} field${(fillRes.filled ?? 0) !== 1 ? "s" : ""}</div>
-      <p style="margin-top:8px;font-size:12px;color:#6b7280">Review every field before submitting. Sensitive fields (SSN, A-number) were skipped.</p>
-      <button class="btn btn-secondary" id="btn-back" style="margin-top:12px">Back</button>
-    `);
-    document.getElementById("btn-back")!.addEventListener("click", () => renderPaired(Date.now()));
   }
 }
 
